@@ -17,7 +17,7 @@ class NoiseGenerator:
     """Class to generate different types of noise for satellite measurements. """
 
     @staticmethod
-    def generate_gps_position_noise(state_vector: np.ndarray, sigma_rtn: np.ndarray, seed: int) -> np.ndarray:
+    def generate_gps_position_noise(state_vector: np.ndarray, sigma_rtn: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:
         """ Generate GPS position measurement noise in RTN frame using Sobol sequences and Gaussian distribution."""
 
         num_epochs = state_vector.shape[0]
@@ -54,6 +54,7 @@ class NoiseGenerator:
 
         return eci_position_errors, rtn_position_errors
     
+    @staticmethod
     def generate_pointing_angles_noise(
         plotter: Plotter,
         pitch_history_json_path: Path,
@@ -72,9 +73,11 @@ class NoiseGenerator:
         file_prefixes = ['pitch', 'yaw', 'roll']
         error_free_pointing_angles_time_series = {}
         noisy_attitude_time_series = {}
+        seed_variation = 0
 
         # Load the ASD data from the uploaded JSON file
         for path, file_prefix in zip(json_paths, file_prefixes):
+            
             with open(path, 'r') as file:
                 asd_data = json.load(file)
 
@@ -99,7 +102,7 @@ class NoiseGenerator:
             psd_interpolated = types.frequencyseries.FrequencySeries(asd_interpolated**2, delta_f)
 
             # Generate noise using the PSD, sample rate of 5 seconds for a time span of 31 days
-            noise_time_series = noise.gaussian.noise_from_psd(num_samples, time_step, psd_interpolated, seed)
+            noise_time_series = noise.gaussian.noise_from_psd(num_samples, time_step, psd_interpolated, seed + seed_variation)
 
             error_free_pointing_angles_time_series[file_prefix] = noise_time_series
 
@@ -146,6 +149,7 @@ class NoiseGenerator:
                     delta_t=time_step
                 )
             
+            seed_variation += 1            
             
             if generate_plots:
                 
@@ -253,10 +257,10 @@ class NoiseGenerator:
             position_data: List[np.ndarray],
             eci_gps_position_noise: dict[str, np.ndarray],
             antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
-            guessed_antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
+            standard_deviation_guessed_antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
             bias_value: float,
             plotter: Plotter,
-        ) -> types.TimeSeries:
+        ) -> np.ndarray:
         """ 
         Generate KBR range measurement noise using pointing angles noise time series,
         satellite position data, and systema and oscillator noise timeseries.
@@ -277,13 +281,13 @@ class NoiseGenerator:
         apc_pointing_jitter_coupling_noise = dict()
 
         position_data = {
-            "Grace-FO_A": position_data[0],
-            "Grace-FO_B": position_data[1],
+            "GRACE C": position_data[0],
+            "GRACE D": position_data[1],
         }
 
         num_epochs = len(kbr_system_and_oscillator_noise_timeseries)
 
-        for satellite in ["Grace-FO_A", "Grace-FO_B"]:
+        for satellite in ["GRACE C", "GRACE D"]:
 
             roll  = np.asarray(error_free_pointing_angles_time_series[satellite]["roll"], dtype=float)
             pitch = np.asarray(error_free_pointing_angles_time_series[satellite]["pitch"], dtype=float)
@@ -295,7 +299,7 @@ class NoiseGenerator:
             rot_matrices_sf_to_losf[satellite] = rot_sf_to_losf.as_matrix()
 
             primary_position = position_data[satellite]
-            secondary_position = position_data["Grace-FO_B" if satellite == "Grace-FO_A" else "Grace-FO_A"]
+            secondary_position = position_data["GRACE D" if satellite == "GRACE C" else "GRACE C"]
 
             # Compute LOSF to J2000 matrices for both satellites
             x_losf = (secondary_position - primary_position) / np.linalg.norm(secondary_position \
@@ -332,8 +336,8 @@ class NoiseGenerator:
         residual_apc_coupling_jitter_noise = dict()
 
         noisy_position_data = {
-            "Grace-FO_A": position_data["Grace-FO_A"] + eci_gps_position_noise["Grace-FO_A"],
-            "Grace-FO_B": position_data["Grace-FO_B"] + eci_gps_position_noise["Grace-FO_B"],
+            "GRACE C": position_data["GRACE C"] + eci_gps_position_noise["GRACE C"],
+            "GRACE D": position_data["GRACE D"] + eci_gps_position_noise["GRACE D"],
         }
 
         # Preallocate dictionaries for rotation matrices from SF to LOSF
@@ -346,7 +350,14 @@ class NoiseGenerator:
         rot_matrices_sf_to_j2000_noisy = dict()
         los_vectors_j2000_noisy = dict()
 
-        for satellite in ["Grace-FO_A", "Grace-FO_B"]:
+        sampler_seed = {
+            "GRACE C": 90,
+            "GRACE D": 91,
+        }
+        eps = np.finfo(np.float64).eps
+
+
+        for satellite in ["GRACE C", "GRACE D"]:
 
             # Noisy attitude angles
             roll_noisy  = np.asarray(noisy_attitude_time_series[satellite]["roll"], dtype=float)
@@ -361,7 +372,7 @@ class NoiseGenerator:
 
             # Noisy positions
             primary_position_noisy = noisy_position_data[satellite]
-            secondary_satellite = "Grace-FO_B" if satellite == "Grace-FO_A" else "Grace-FO_A"
+            secondary_satellite = "GRACE D" if satellite == "GRACE C" else "GRACE C"
             secondary_position_noisy = noisy_position_data[secondary_satellite]
 
             # Compute noisy LOSF to J2000 matrices for both satellites 
@@ -396,11 +407,33 @@ class NoiseGenerator:
                 @ rot_matrices_sf_to_losf_noisy[satellite]
             )
 
+            # Smallest exponent m such that 2**m >= num_epochs
+            exponent_num_samples = int(np.ceil(np.log2(num_epochs)))
+            
+            guessed_antenna_phase_center_offset_vector_sf_errors = np.empty((num_epochs, 3))
+            guessed_antenna_phase_center_offset_vector_sf = np.empty((num_epochs, 3))
+
+            # Generate Sobol samples
+            sampler = qmc.Sobol(d=3, scramble=True, rng=sampler_seed[satellite])
+            sobol_samples = sampler.random_base2(m=exponent_num_samples)
+            sobol_samples = np.clip(sobol_samples, eps, 1.0 - eps)
+
+            # Transform to normal distribution
+            normal_distribution_samples = norm.ppf(sobol_samples)
+
+            # Scale by standard deviation
+            guessed_antenna_phase_center_offset_vector_sf_errors = normal_distribution_samples[:num_epochs, 0:3] * \
+                standard_deviation_guessed_antenna_phase_center_offset_vector_sf[satellite]
+            
+            guessed_antenna_phase_center_offset_vector_sf = (
+                antenna_phase_center_offset_vector_sf[satellite]
+                + guessed_antenna_phase_center_offset_vector_sf_errors
+            )
             # Guessed APC offset rotated to J2000
             guessed_antenna_phase_center_offset_vector_j2000 = np.einsum(
-                "nij,j->ni",
+                "nij,nj->ni",
                 rot_matrices_sf_to_j2000_noisy[satellite],
-                guessed_antenna_phase_center_offset_vector_sf[satellite],
+                guessed_antenna_phase_center_offset_vector_sf,
             )
 
             # Estimated antenna offset correction
@@ -432,22 +465,22 @@ class NoiseGenerator:
         bias = 0.0 * kbr_system_and_oscillator_noise_timeseries + bias_value
 
         # Final length checks
-        if len(apc_pointing_jitter_coupling_noise["Grace-FO_A"]) != num_epochs\
-              or len(apc_pointing_jitter_coupling_noise["Grace-FO_B"]) != num_epochs\
+        if len(apc_pointing_jitter_coupling_noise["GRACE C"]) != num_epochs\
+              or len(apc_pointing_jitter_coupling_noise["GRACE D"]) != num_epochs\
                 or len(bias) != num_epochs:
             raise ValueError(
                 f"TimeSeries length mismatch."
             )
 
-        total_kbr_range_noise = (residual_apc_coupling_jitter_noise["Grace-FO_A"] + \
-                                residual_apc_coupling_jitter_noise["Grace-FO_B"] + \
+        total_kbr_range_noise = (residual_apc_coupling_jitter_noise["GRACE C"] + \
+                                residual_apc_coupling_jitter_noise["GRACE D"] + \
                                 bias + \
                                 np.asarray(kbr_system_and_oscillator_noise_timeseries, dtype=float))
 
         print("=================================")
         print(f"Total KBR range noise stats: mean={np.mean(total_kbr_range_noise):.3e} m, std={np.std(total_kbr_range_noise):.3e} m")
         print(f"KBR range noise contributions stats:")
-        for satellite in ["Grace-FO_A", "Grace-FO_B"]:
+        for satellite in ["GRACE C", "GRACE D"]:
             print(f"  {satellite} APC residual pointing jitter coupling noise: mean={np.mean(residual_apc_coupling_jitter_noise[satellite]):.3e} m, std={np.std(residual_apc_coupling_jitter_noise[satellite]):.3e} m")
         print(f"  KBR system and oscillator noise: mean={np.mean(kbr_system_and_oscillator_noise_timeseries):.3e} m, std={np.std(kbr_system_and_oscillator_noise_timeseries):.3e} m")
         print("=================================\n")

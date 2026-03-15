@@ -2,7 +2,7 @@
 # to avoid cluttering log outpuyt with irrelevant messages.
 import warnings
 
-from tudatpy.dynamics import propagation_setup
+
 warnings.filterwarnings(
     "ignore",
     message="pkg_resources is deprecated as an API"
@@ -15,6 +15,7 @@ from orbit_simulator import OrbitalElements
 from plotter import Plotter
 from noise_generator import NoiseGenerator
 from environment_customizer import EnvironmentCustomizer
+from guidance import Guidance
 
 # Load tudatpy modules
 from tudatpy.interface import spice
@@ -24,10 +25,12 @@ from tudatpy.astro import gravitation
 from tudatpy.util import result2array
 from tudatpy.astro.time_representation import DateTime
 from tudatpy.dynamics.propagation_setup import dependent_variable
+from tudatpy.dynamics import propagation_setup
 
 
-simulation_start_epoch = DateTime(2005, 3, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2005, 3, 3, 0, 0, 0).to_epoch() 
+
+simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
+simulation_end_epoch = DateTime(2019, 2, 1, 0, 0, 0).to_epoch() 
 time_step = 5.0  # seconds
 number_epochs = int(np.floor((simulation_end_epoch - simulation_start_epoch) / time_step)) + 1
 
@@ -59,12 +62,12 @@ noisy_attitude_time_series = dict()
 # https://github.com/Darbeheshti/GRACE-Follow-On-simulator
 
 white_noise_asd_values = {
-    "Grace-FO_A": {
+    "GRACE C": {
         "roll": 20e-6,
         "pitch": 20e-6,
         "yaw": 20e-6,
     },
-    "Grace-FO_B": {
+    "GRACE D": {
         "roll": 20e-6,
         "pitch": 20e-6,
         "yaw": 20e-6,
@@ -72,19 +75,19 @@ white_noise_asd_values = {
 }
 
 bias_noise_values = {
-    "Grace-FO_A": {
+    "GRACE C": {
         "roll": 1.2e-3,
         "pitch": -2.2e-3,
         "yaw": 1.8e-3,
     },
-    "Grace-FO_B": {
+    "GRACE D": {
         "roll": -2.9e-3,
         "pitch": -1.8e-3,
         "yaw": 2.1e-3,
     }
 }
 
-for satellite, seed in zip(["Grace-FO_A", "Grace-FO_B"], [42, 43]):
+for satellite, seed in zip(["GRACE C", "GRACE D"], [42, 43]):
     
    # Generate pointing angles noise time series for each satellite
 
@@ -103,21 +106,101 @@ for satellite, seed in zip(["Grace-FO_A", "Grace-FO_B"], [42, 43]):
 rotation_model_context: dict[str, object] = {"bodies": None}
 attitude_noise_sample_times = simulation_start_epoch + np.arange(number_epochs, dtype=float) * time_step
 
-grace_fo_a_custom_rotation_matrix_callable = EnvironmentCustomizer.create_custom_spacecraft_rotation_function(
-    spacecraft_name="Grace-FO A",
-    counterpart_name="Grace-FO B",
-    attitude_noise_history=error_free_pointing_angles_time_series["Grace-FO_A"],
+grace_c_custom_rotation_matrix_callable = EnvironmentCustomizer.create_custom_spacecraft_rotation_function(
+    spacecraft_name="GRACE C",
+    counterpart_name="GRACE D",
+    attitude_noise_history=error_free_pointing_angles_time_series["GRACE C"],
     sample_times=attitude_noise_sample_times,
     rotation_model_context=rotation_model_context,
 )
 
-grace_fo_b_custom_rotation_matrix_callable = EnvironmentCustomizer.create_custom_spacecraft_rotation_function(
-    spacecraft_name="Grace-FO B",
-    counterpart_name="Grace-FO A",
-    attitude_noise_history=error_free_pointing_angles_time_series["Grace-FO_B"],
+grace_d_custom_rotation_matrix_callable = EnvironmentCustomizer.create_custom_spacecraft_rotation_function(
+    spacecraft_name="GRACE D",
+    counterpart_name="GRACE C",
+    attitude_noise_history=error_free_pointing_angles_time_series["GRACE D"],
     sample_times=attitude_noise_sample_times,
     rotation_model_context=rotation_model_context,
 )
+
+###################################################################
+#
+#            GRACE-FO ORBIT SIMULATION AND INITIALIZATION
+#
+###################################################################
+
+# NOTE: This commented section shows how the initial states of the
+# GRACE-FO satellites can be defined using Keplerian orbital elements.
+# This method is currently not used in the simulation, as the initial
+# states are now obtained through a different approach.
+
+# # GRACE D
+
+# grace_d_initial_altitude_km = 477.7
+# earth_radius_km = bodies.get("Earth").shape_model.average_radius / 1e3
+# grace_d_initial_orbit_semi_major_axis_km = earth_radius_km + grace_d_initial_altitude_km
+
+# grace_d_initial_orbital_elements = OrbitalElements(
+#                               a_km=grace_d_initial_orbit_semi_major_axis_km,
+#                               e=0.0019,
+#                               i_deg=89.0081,
+#                               raan_deg=0.0,
+#                               argp_deg=0.0,
+#                               M_deg=0.0,
+#                            )
+
+# grace_d_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
+#    gravitational_parameter=earth_gravitational_parameter,
+#    semi_major_axis=grace_d_initial_orbital_elements.a_km * 1e3,
+#    eccentricity=grace_d_initial_orbital_elements.e,
+#    inclination=np.radians(grace_d_initial_orbital_elements.i_deg),
+#    longitude_of_ascending_node=np.radians(grace_d_initial_orbital_elements.raan_deg),
+#    argument_of_periapsis=np.radians(grace_d_initial_orbital_elements.argp_deg),
+#    true_anomaly=element_conversion.mean_to_true_anomaly(
+#                   mean_anomaly=np.radians(grace_d_initial_orbital_elements.M_deg),
+#                   eccentricity=grace_d_initial_orbital_elements.e,
+#                ),
+# )
+
+
+# # GRACE C
+
+# grace_c_initial_orbital_elements = grace_d_initial_orbital_elements.get_along_track_shift(
+#     separation_km=238.0
+# )
+# grace_c_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
+#    gravitational_parameter=earth_gravitational_parameter,
+#    semi_major_axis=grace_c_initial_orbital_elements.a_km * 1e3,
+#    eccentricity=grace_c_initial_orbital_elements.e,
+#    inclination=np.radians(grace_c_initial_orbital_elements.i_deg),
+#    longitude_of_ascending_node=np.radians(grace_c_initial_orbital_elements.raan_deg),
+#    argument_of_periapsis=np.radians(grace_c_initial_orbital_elements.argp_deg),
+#    true_anomaly=element_conversion.mean_to_true_anomaly(
+#                   mean_anomaly=np.radians(grace_c_initial_orbital_elements.M_deg),
+#                   eccentricity=grace_c_initial_orbital_elements.e,
+#               ),
+#    )
+
+# The initial state vectors of the GRACE-FO satellites are defined based
+# on its TLEs at the simulation epoch, which are obtained from space-track.org
+grace_c_tle = dynamics.environment_setup.ephemeris.sgp4(
+    "1 43476U 18047A   18365.89673225 +.00000266 +00000-0 +96631-5 0  9993",
+    "2 43476 088.9970 209.2025 0019272 138.9449 221.3254 15.23792965033965"
+)
+grace_d_tle = dynamics.environment_setup.ephemeris.sgp4(
+    "1 43477U 18047B   18365.89702718 +.00000263 +00000-0 +95755-5 0  9997",
+    "2 43477 088.9971 209.2044 0019074 138.5411 221.7288 15.23793300033968"
+)
+
+grace_c_ephemeris = dynamics.environment_setup.create_body_ephemeris(grace_c_tle, "GRACE C")
+grace_d_ephemeris = dynamics.environment_setup.create_body_ephemeris(grace_d_tle, "GRACE D")
+
+grace_c_initial_state = grace_c_ephemeris.cartesian_state(simulation_start_epoch)  # [m, m/s]
+grace_d_initial_state = grace_d_ephemeris.cartesian_state(simulation_start_epoch)  # [m, m/s]
+
+# Initial range between the two satellites, which is used as a reference value for the guidance model.
+target_range = np.linalg.norm(grace_c_initial_state[0:3] - grace_d_initial_state[0:3]) # [m] 
+
+initial_states = np.hstack((grace_c_initial_state, grace_d_initial_state))
 
 
 ###################################################################
@@ -140,11 +223,11 @@ drag_coefficient = 2.4
 # Ref: https://essd.copernicus.org/articles/9/833/2017/
 grace_fo_mass = 655.0   # [kg]
 
-grace_fo_a_per_source_occulting_bodies = {
+grace_c_per_source_occulting_bodies = {
    "Sun": ["Earth", "Moon"],
    }
 
-grace_fo_b_per_source_occulting_bodies = {
+grace_d_per_source_occulting_bodies = {
    "Sun": ["Earth", "Moon"],
    }
 
@@ -209,20 +292,20 @@ body_settings.get("Sun").gravity_field_settings = dynamics.environment_setup.gra
       associated_reference_frame = "IAU_Sun"
 )
 
-body_settings.add_empty_settings("Grace-FO A")
-body_settings.add_empty_settings("Grace-FO B")
+body_settings.add_empty_settings("GRACE C")
+body_settings.add_empty_settings("GRACE D")
 
-body_settings.get("Grace-FO A").rotation_model_settings = dynamics.environment_setup.rotation_model.custom_rotation_model(
+body_settings.get("GRACE C").rotation_model_settings = dynamics.environment_setup.rotation_model.custom_rotation_model(
     base_frame="J2000",
-    target_frame="Grace-FO_A_SF",
-    custom_rotation_matrix_function=grace_fo_a_custom_rotation_matrix_callable,
+    target_frame="GRACE C_SF",
+    custom_rotation_matrix_function=grace_c_custom_rotation_matrix_callable,
     finite_difference_time_step=time_step,
 )
 
-body_settings.get("Grace-FO B").rotation_model_settings = dynamics.environment_setup.rotation_model.custom_rotation_model(
+body_settings.get("GRACE D").rotation_model_settings = dynamics.environment_setup.rotation_model.custom_rotation_model(
     base_frame="J2000",
-    target_frame="Grace-FO_B_SF",
-    custom_rotation_matrix_function=grace_fo_b_custom_rotation_matrix_callable,
+    target_frame="GRACE D_SF",
+    custom_rotation_matrix_function=grace_d_custom_rotation_matrix_callable,
     finite_difference_time_step=time_step,
 )
 
@@ -260,8 +343,8 @@ grace_fo_reradiation_settings = {
 
 grace_fo_frame_origin = np.array([0.0, 0.0, 0.0])  # [m], origin of the spacecraft bus frame in the SF frame
 
-grace_fo_bus_panels = dynamics.environment_setup.vehicle_systems.body_panel_settings_list_from_dae(
-    file_path=str(Path("./data/grace_fo_low_fidelity.dae")),
+grace_dus_panels = dynamics.environment_setup.vehicle_systems.body_panel_settings_list_from_dae(
+    file_path=str(Path("./data/grace_fo_low_fidelity_v1.dae")),
     frame_origin=grace_fo_frame_origin,
     material_properties=grace_fo_material_properties,
     reradiation_settings=grace_fo_reradiation_settings,
@@ -269,34 +352,34 @@ grace_fo_bus_panels = dynamics.environment_setup.vehicle_systems.body_panel_sett
 )
 
 grace_fo_full_panelled_body = dynamics.environment_setup.vehicle_systems.full_panelled_body_settings(
-    grace_fo_bus_panels,
+    grace_dus_panels,
 )
 
-body_settings.get("Grace-FO A").vehicle_shape_settings = grace_fo_full_panelled_body
-body_settings.get("Grace-FO B").vehicle_shape_settings = grace_fo_full_panelled_body
+body_settings.get("GRACE C").vehicle_shape_settings = grace_fo_full_panelled_body
+body_settings.get("GRACE D").vehicle_shape_settings = grace_fo_full_panelled_body
 
-grace_fo_a_target_settings = dynamics.environment_setup.radiation_pressure.panelled_radiation_target(
-    grace_fo_a_per_source_occulting_bodies
+grace_c_target_settings = dynamics.environment_setup.radiation_pressure.panelled_radiation_target(
+    grace_c_per_source_occulting_bodies
 )
 
-grace_fo_b_target_settings = dynamics.environment_setup.radiation_pressure.panelled_radiation_target(
-    grace_fo_b_per_source_occulting_bodies
+grace_d_target_settings = dynamics.environment_setup.radiation_pressure.panelled_radiation_target(
+    grace_d_per_source_occulting_bodies
 )
 
-body_settings.get("Grace-FO A").radiation_pressure_target_settings = (
-    grace_fo_a_target_settings
+body_settings.get("GRACE C").radiation_pressure_target_settings = (
+    grace_c_target_settings
 )
 
-body_settings.get("Grace-FO B").radiation_pressure_target_settings = (
-    grace_fo_b_target_settings
+body_settings.get("GRACE D").radiation_pressure_target_settings = (
+    grace_d_target_settings
 )
 
 aero_coefficients_settings = dynamics.environment_setup.aerodynamic_coefficients.constant_variable_cross_section(
     [drag_coefficient, 0.0, 0.0])
 
 # Add the aerodynamic interface to the body settings
-body_settings.get("Grace-FO A").aerodynamic_coefficient_settings = aero_coefficients_settings
-body_settings.get("Grace-FO B").aerodynamic_coefficient_settings = aero_coefficients_settings
+body_settings.get("GRACE C").aerodynamic_coefficient_settings = aero_coefficients_settings
+body_settings.get("GRACE D").aerodynamic_coefficient_settings = aero_coefficients_settings
 
 # create atmosphere settings and add to body settings of body "Earth"
 body_settings.get( "Earth" ).atmosphere_settings = dynamics.environment_setup.atmosphere.nrlmsise00()
@@ -357,11 +440,11 @@ body_settings.get( "Saturn" ).ephemeris_settings = dynamics.environment_setup.ep
 bodies = dynamics.environment_setup.create_system_of_bodies(body_settings)
 rotation_model_context["bodies"] = bodies
 
-bodies.get("Grace-FO A").mass = grace_fo_mass
-bodies.get("Grace-FO B").mass = grace_fo_mass
+bodies.get("GRACE C").mass = grace_fo_mass
+bodies.get("GRACE D").mass = grace_fo_mass
 
 # Define bodies that are propagated
-bodies_to_propagate = ["Grace-FO A", "Grace-FO B"]
+bodies_to_propagate = ["GRACE C", "GRACE D"]
 
 # Define central bodies of propagation
 central_bodies = ["Earth", "Earth"]
@@ -375,34 +458,78 @@ use_schwarzschild = True
 use_lense_thirring = False
 use_de_sitter = True
 
-# Define accelerations acting on the GRACE-FO satellites
-acceleration_settings_grace_fo = dict(
-   Earth=[dynamics.propagation_setup.acceleration.relativistic_correction(
-               use_schwarzschild,
-               use_lense_thirring,
-               use_de_sitter,
-               de_sitter_central_body="Sun",
-          ),
-          dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(20, 20),  # Default Max Degree: 200, Max Order: 200
-          dynamics.propagation_setup.acceleration.aerodynamic(),
-          ],
-   Sun=[dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0),
-         dynamics.propagation_setup.acceleration.radiation_pressure(),
-        ],
-   Moon=[dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0)],    # Default Max Degree: 200, Max Order: 200
-   Mars=[dynamics.propagation_setup.acceleration.point_mass_gravity()],                # Default Max Degree: 120, Max Order: 120
-   Venus=[dynamics.propagation_setup.acceleration.point_mass_gravity()],               # Default Max Degree: 180, Max Order: 180   
-   Mercury=[dynamics.propagation_setup.acceleration.point_mass_gravity()],             # Default Max Degree: 160, Max Order: 160
-   Jupiter=[dynamics.propagation_setup.acceleration.point_mass_gravity()],             # Zonal coefficients up to degree 8
-   Saturn=[dynamics.propagation_setup.acceleration.point_mass_gravity()],                           
-   Uranus=[dynamics.propagation_setup.acceleration.point_mass_gravity()],
-   Neptune=[dynamics.propagation_setup.acceleration.point_mass_gravity()],
-   Ceres=[dynamics.propagation_setup.acceleration.point_mass_gravity()],
-   Vesta=[dynamics.propagation_setup.acceleration.point_mass_gravity()],
-   Pluto=[dynamics.propagation_setup.acceleration.point_mass_gravity()],
+
+guidance_model = Guidance(
+    bodies=bodies,
+    controlled_satellite="GRACE C",
+    reference_satellite="GRACE D",
+    target_range=target_range,
+    n_revolutions=1,      
+    distance_threshold=10.0e3,  
+    initial_time=simulation_start_epoch,           
+    burn_duration=100,                   
 )
 
-acceleration_settings = {"Grace-FO A": acceleration_settings_grace_fo, "Grace-FO B": acceleration_settings_grace_fo}
+
+# Define accelerations acting on the GRACE-FO satellites
+acceleration_settings_grace_d = {
+    "Earth": [dynamics.propagation_setup.acceleration.relativistic_correction(
+                use_schwarzschild,
+                use_lense_thirring,
+                use_de_sitter,
+                de_sitter_central_body="Sun",
+           ),
+           dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(20, 20),  # Default Max Degree: 200, Max Order: 200
+           dynamics.propagation_setup.acceleration.aerodynamic(),
+           ],
+    "Sun": [dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0),
+          dynamics.propagation_setup.acceleration.radiation_pressure(),
+         ],
+    "Moon": [dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0)],    # Default Max Degree: 200, Max Order: 200
+    "Mars": [dynamics.propagation_setup.acceleration.point_mass_gravity()],                # Default Max Degree: 120, Max Order: 120
+    "Venus": [dynamics.propagation_setup.acceleration.point_mass_gravity()],               # Default Max Degree: 180, Max Order: 180   
+    "Mercury": [dynamics.propagation_setup.acceleration.point_mass_gravity()],             # Default Max Degree: 160, Max Order: 160
+    "Jupiter": [dynamics.propagation_setup.acceleration.point_mass_gravity()],             # Zonal coefficients up to degree 8
+    "Saturn": [dynamics.propagation_setup.acceleration.point_mass_gravity()],                           
+    "Uranus": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Neptune": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Ceres": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Vesta": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Pluto": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+}
+
+# Define accelerations acting on the GRACE-FO satellites
+acceleration_settings_grace_c = {
+    "Earth": [dynamics.propagation_setup.acceleration.relativistic_correction(
+            use_schwarzschild,
+            use_lense_thirring,
+            use_de_sitter,
+            de_sitter_central_body="Sun",
+        ),
+        dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(20, 20),  # Default Max Degree: 200, Max Order: 200
+        dynamics.propagation_setup.acceleration.aerodynamic(),
+        ],
+    "Sun": [dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0),
+        dynamics.propagation_setup.acceleration.radiation_pressure(),
+        ],
+    "Moon": [dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0)],    # Default Max Degree: 200, Max Order: 200
+    "Mars": [dynamics.propagation_setup.acceleration.point_mass_gravity()],                # Default Max Degree: 120, Max Order: 120
+    "Venus": [dynamics.propagation_setup.acceleration.point_mass_gravity()],               # Default Max Degree: 180, Max Order: 180   
+    "Mercury": [dynamics.propagation_setup.acceleration.point_mass_gravity()],             # Default Max Degree: 160, Max Order: 160
+    "Jupiter": [dynamics.propagation_setup.acceleration.point_mass_gravity()],             # Zonal coefficients up to degree 8
+    "Saturn": [dynamics.propagation_setup.acceleration.point_mass_gravity()],                           
+    "Uranus": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Neptune": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Ceres": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Vesta": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "Pluto": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
+    "GRACE C": [dynamics.propagation_setup.acceleration.custom_acceleration(
+        guidance_model.get_acceleration
+    )],
+}
+
+
+acceleration_settings = {"GRACE C": acceleration_settings_grace_c, "GRACE D": acceleration_settings_grace_d}
 
 # Create acceleration models
 acceleration_models = dynamics.propagation_setup.create_acceleration_models(
@@ -420,91 +547,38 @@ termination_settings = dynamics.propagation_setup.propagator.time_termination(si
 
 earth_gravitational_parameter = bodies.get("Earth").gravitational_parameter
 
-###################################################################
-#
-#                       GRACE-FO ORBIT SIMULATION
-#
-###################################################################
-
-# GRACE-FO B
-
-grace_fo_b_initial_altitude_km = 477.7
-earth_radius_km = bodies.get("Earth").shape_model.average_radius / 1e3
-grace_fo_b_initial_orbit_semi_major_axis_km = earth_radius_km + grace_fo_b_initial_altitude_km
-
-grace_fo_b_initial_orbital_elements = OrbitalElements(
-                              a_km=grace_fo_b_initial_orbit_semi_major_axis_km,
-                              e=0.0019,
-                              i_deg=89.0081,
-                              raan_deg=0.0,
-                              argp_deg=0.0,
-                              M_deg=0.0,
-                           )
-
-grace_fo_b_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
-   gravitational_parameter=earth_gravitational_parameter,
-   semi_major_axis=grace_fo_b_initial_orbital_elements.a_km * 1e3,
-   eccentricity=grace_fo_b_initial_orbital_elements.e,
-   inclination=np.radians(grace_fo_b_initial_orbital_elements.i_deg),
-   longitude_of_ascending_node=np.radians(grace_fo_b_initial_orbital_elements.raan_deg),
-   argument_of_periapsis=np.radians(grace_fo_b_initial_orbital_elements.argp_deg),
-   true_anomaly=element_conversion.mean_to_true_anomaly(
-                  mean_anomaly=np.radians(grace_fo_b_initial_orbital_elements.M_deg),
-                  eccentricity=grace_fo_b_initial_orbital_elements.e,
-               ),
-)
-
-
-# GRACE-FO A
-
-grace_fo_a_initial_orbital_elements = grace_fo_b_initial_orbital_elements.get_along_track_shift(
-    separation_km=238.0
-)
-grace_fo_a_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
-   gravitational_parameter=earth_gravitational_parameter,
-   semi_major_axis=grace_fo_a_initial_orbital_elements.a_km * 1e3,
-   eccentricity=grace_fo_a_initial_orbital_elements.e,
-   inclination=np.radians(grace_fo_a_initial_orbital_elements.i_deg),
-   longitude_of_ascending_node=np.radians(grace_fo_a_initial_orbital_elements.raan_deg),
-   argument_of_periapsis=np.radians(grace_fo_a_initial_orbital_elements.argp_deg),
-   true_anomaly=element_conversion.mean_to_true_anomaly(
-                  mean_anomaly=np.radians(grace_fo_a_initial_orbital_elements.M_deg),
-                  eccentricity=grace_fo_a_initial_orbital_elements.e,
-              ),
-   )
-
-
-initial_states = np.hstack((grace_fo_a_initial_state, grace_fo_b_initial_state))
-
 dependent_variables_to_save = [
     dependent_variable.single_acceleration_norm(
-        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "Grace-FO A", "Sun",
+        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "GRACE C", "Sun",
     ),
     dependent_variable.single_acceleration_norm(
-        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "Grace-FO B", "Sun",
+        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "GRACE D", "Sun",
     ),
     dependent_variable.single_acceleration(
-        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "Grace-FO A", "Sun",
+        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "GRACE C", "Sun",
     ),
     dependent_variable.single_acceleration(
-        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "Grace-FO B", "Sun",
+        dynamics.propagation_setup.acceleration.radiation_pressure_type,  "GRACE D", "Sun",
     ),
     dependent_variable.single_acceleration_norm(
-        dynamics.propagation_setup.acceleration.aerodynamic_type, "Grace-FO A", "Earth"
+        dynamics.propagation_setup.acceleration.aerodynamic_type, "GRACE C", "Earth"
     ),
     dependent_variable.single_acceleration_norm(
-        dynamics.propagation_setup.acceleration.aerodynamic_type, "Grace-FO B", "Earth"
+        dynamics.propagation_setup.acceleration.aerodynamic_type, "GRACE D", "Earth"
     ),
     dependent_variable.single_acceleration(
-        dynamics.propagation_setup.acceleration.aerodynamic_type, "Grace-FO A", "Earth"
+        dynamics.propagation_setup.acceleration.aerodynamic_type, "GRACE C", "Earth"
     ),
     dependent_variable.single_acceleration(
-        dynamics.propagation_setup.acceleration.aerodynamic_type, "Grace-FO B", "Earth"
+        dynamics.propagation_setup.acceleration.aerodynamic_type, "GRACE D", "Earth"
     ),
-    dependent_variable.inertial_to_body_fixed_rotation_frame("Grace-FO A"),
-    dependent_variable.inertial_to_body_fixed_rotation_frame("Grace-FO B"),
-    dependent_variable.keplerian_state("Grace-FO A", "Earth"),  
-    dependent_variable.keplerian_state("Grace-FO B", "Earth"),
+    dependent_variable.inertial_to_body_fixed_rotation_frame("GRACE C"),
+    dependent_variable.inertial_to_body_fixed_rotation_frame("GRACE D"),
+    dependent_variable.keplerian_state("GRACE C", "Earth"),  
+    dependent_variable.keplerian_state("GRACE D", "Earth"),
+    dependent_variable.single_acceleration(
+        dynamics.propagation_setup.acceleration.custom_acceleration_type, "GRACE C", "GRACE C"
+    ),
     ]
 
 # Create propagation settings
@@ -548,31 +622,31 @@ dependent_variables_array = result2array(dependent_variables_history)
 
 time_data = states_array[:, 0]
 grace_fo_position_data = [
-    states_array[:, 1:4],   # GRACE-FO A position
-    states_array[:, 7:10],  # GRACE-FO B position
+    states_array[:, 1:4],   # GRACE C position
+    states_array[:, 7:10],  # GRACE D position
 ]
 grace_fo_velocity_data = [
-    states_array[:, 4:7],    # GRACE-FO A velocity
-    states_array[:, 10:13],  # GRACE-FO B velocity
+    states_array[:, 4:7],    # GRACE C velocity
+    states_array[:, 10:13],  # GRACE D velocity
 ]
 
 
-# Eccentricity history of GRACE-FO A
-grace_fo_a_eccentricity_history = dependent_variables_array[:, 36]  
-# Eccentricity history of GRACE-FO B
-grace_fo_b_eccentricity_history = dependent_variables_array[:, 42]  
+# Eccentricity history of GRACE C
+grace_c_eccentricity_history = dependent_variables_array[:, 36]  
+# Eccentricity history of GRACE D
+grace_d_eccentricity_history = dependent_variables_array[:, 42]  
 
 plotter.plot_eccentricity_time_evolution(
     time_data,
-    grace_fo_a_eccentricity_history,
-    grace_fo_b_eccentricity_history
+    grace_c_eccentricity_history,
+    grace_d_eccentricity_history
 )
 
 plotter.plot_orbits(
     no_satellites=2,
     position_data=grace_fo_position_data,
-    title="GRACE-FO A and GRACE-FO B orbits",
-    sat_labels=["GRACE-FO A", "GRACE-FO B"],
+    title="GRACE C and GRACE D orbits",
+    sat_labels=["GRACE C", "GRACE D"],
     file_name="grace_fo_nominal_orbits.png"
 )
 
@@ -580,8 +654,10 @@ plotter.plot_relative_position(
    time_data=time_data,
    position_data=grace_fo_position_data,
    velocity_data=grace_fo_velocity_data,
-   title="RTN relative position components - GRACE-FO",
-   file_name="grace_fo_rtn_relative_position.png"
+   first_figure_title="RTN relative position components time evolution - GRACE-FO",
+   first_file_name="grace_fo_rtn_relative_position_components.png",
+   second_figure_title="RTN Relative position time evolution - GRACE-FO",
+   second_file_name="grace_fo_3d_rtn_relative_position.png",
 )
 
 plotter.plot_srp_acceleration_time_series(
@@ -592,11 +668,16 @@ plotter.plot_aerodynamic_acceleration_time_series(
     dependent_variables_array=dependent_variables_array,
 )
 
+plotter.plot_custom_acceleration_time_series(
+    dependent_variables_array=dependent_variables_array,
+    states_array=states_array,
+)
+
 plotter.plot_attitude_triads_orientation(
     dependent_variables_array=dependent_variables_array,
     grace_fo_position_data=grace_fo_position_data,
     epoch_idx=100,
-    file_name="grace_fo_attitude_triads_epoch_100.png"
+    file_name="grace_cttitude_triads_epoch_100.png"
 )
 
 
@@ -604,48 +685,48 @@ plotter.plot_attitude_triads_orientation(
 # GPS POSITION MEASUREMENT SIMULATION 
 # =====================================
 
-# NOTE: The GPS noise model is defined through a one-sided PSD
-# equal to S(f) = S = 1 cm/Hz. When converting a continuous
+# NOTE: The GPS noise model is defined through a one-sided ASD
+# equal to S(f) = S = 1 cm/(Hz^1/2). When converting a continuous
 # white-noise PSD to a discrete-time sequence sampled every time_step,
 # the variance must account for the effective bandwidth introduced by
 # sampling. For a one-sided PSD this bandwidth is fs/2, with fs = 1/time_step.
 # Therefore:
 #
-#     sigma^2 = S * fs / 2 = S / (2*time_step)
+#     sigma^2 = S^2 * fs / 2 = S^2 / (2*time_step)
 #
 
 sigma_gps_position_rtn = np.array([0.01, 0.01, 0.01])*np.sqrt(1/(2*time_step))  # [R, T, N] in meters
 
 
-eci_gps_position_noise_grace_fo_a, rtn_gps_position_noise_grace_fo_a = NoiseGenerator.generate_gps_position_noise(
-    state_vector=states_array[:, 1:7],  # GRACE-FO A state
+eci_gps_position_noise_grace_c, rtn_gps_position_noise_grace_c = NoiseGenerator.generate_gps_position_noise(
+    state_vector=states_array[:, 1:7],  # GRACE C state
     sigma_rtn=sigma_gps_position_rtn,
     seed=40
 )
 
-eci_gps_position_noise_grace_fo_b, rtn_gps_position_noise_grace_fo_b = NoiseGenerator.generate_gps_position_noise(
-    state_vector=states_array[:, 7:13],  # GRACE-FO B state
+eci_gps_position_noise_grace_d, rtn_gps_position_noise_grace_d = NoiseGenerator.generate_gps_position_noise(
+    state_vector=states_array[:, 7:13],  # GRACE D state
     sigma_rtn=sigma_gps_position_rtn,
     seed=41
 )
 
 eci_gps_position_noise = {
-    "Grace-FO_A": eci_gps_position_noise_grace_fo_a,
-    "Grace-FO_B": eci_gps_position_noise_grace_fo_b,
+    "GRACE C": eci_gps_position_noise_grace_c,
+    "GRACE D": eci_gps_position_noise_grace_d,
 }
 
 Plotter.plot_rtn_error_projections(
     plotter,
-    samples_rtn=rtn_gps_position_noise_grace_fo_a,  
+    samples_rtn=rtn_gps_position_noise_grace_c,  
     sigma_rtn=sigma_gps_position_rtn,
-    file_name="grace_fo_a_gps_noise_rtn_projections.png"
+    file_name="grace_c_gps_noise_rtn_projections.png"
 )
 
 Plotter.plot_rtn_error_projections(
     plotter,
-    samples_rtn=rtn_gps_position_noise_grace_fo_b,  
+    samples_rtn=rtn_gps_position_noise_grace_d,  
     sigma_rtn=sigma_gps_position_rtn,
-    file_name="grace_fo_b_gps_noise_rtn_projections.png"
+    file_name="grace_d_gps_noise_rtn_projections.png"
 )
 
 # =====================================
@@ -660,14 +741,16 @@ kbr_system_and_oscillator_noise_timeseries = NoiseGenerator.generate_kbr_system_
 )
 
 antenna_phase_center_offset_vector_sf = {       
-      "Grace-FO_A": np.array([1.4437, -370.6e-6, 145e-6]),  # [m]
-      "Grace-FO_B": np.array([1.4817, 183e-6, 1393.1e-6]),  # [m]
+      "GRACE C": np.array([1.4437, -370.6e-6, 145e-6]),  # [m]
+      "GRACE D": np.array([1.4817, 183e-6, 1393.1e-6]),  # [m]
 }
 
-guessed_antenna_phase_center_offset_vector_sf = {
-    "Grace-FO_A": np.array([1.4437, -370.6e-6, 145e-6]) + np.array([1.2e-3, 64.7e-6, 65.4e-6]),
-    "Grace-FO_B": np.array([1.4817, 183e-6, 1393.1e-6]) + np.array([1.3e-3, 65.9e-6, 71.6e-6]),
-}
+
+standard_deviation_guessed_antenna_phase_center_offset_vector_sf = {
+    "GRACE C": np.array([1.2e-3, 64.7e-6, 65.4e-6]),
+    "GRACE D": np.array([1.3e-3, 65.9e-6, 71.6e-6])
+}  
+
 
 bias_value = 2e-2  # KBR range bias in meters
 
@@ -678,7 +761,7 @@ kbr_range_noise = NoiseGenerator.generate_kbr_range_noise(
     position_data=grace_fo_position_data,
     eci_gps_position_noise=eci_gps_position_noise,
     antenna_phase_center_offset_vector_sf=antenna_phase_center_offset_vector_sf,
-    guessed_antenna_phase_center_offset_vector_sf=guessed_antenna_phase_center_offset_vector_sf,
+    standard_deviation_guessed_antenna_phase_center_offset_vector_sf=standard_deviation_guessed_antenna_phase_center_offset_vector_sf,
     bias_value=bias_value,
     plotter=plotter,
     )

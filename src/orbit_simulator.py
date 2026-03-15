@@ -20,8 +20,8 @@ class OrbitalElements:
     def get_along_track_shift(
         self, 
         separation_km: float,
-        tol_abs: float = 1e-12,
-        tol_rel: float = 1e-12,
+        tol_abs: float = 1e-13,
+        tol_rel: float = 1e-13,
         ) -> 'OrbitalElements':
         """Get the orbital elements of the targeter given a separation from the chaser.
 
@@ -87,7 +87,7 @@ class OrbitalElements:
         if func_value_lower_bound * func_value_upper_bound > 0:
             raise RuntimeError("Could not bracket Δν for the requested separation within one revolution.")
 
-        dnu = brentq(root_function, lower_bound, upper_bound, xtol=1e-12, rtol=1e-12, maxiter=200)
+        dnu = brentq(root_function, lower_bound, upper_bound, xtol=1e-13, rtol=1e-13, maxiter=200)
 
         # Update true anomaly, then convert back to mean anomaly using Tudat
         nu1 = wrap_rad(nu0_rad + dnu)

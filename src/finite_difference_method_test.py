@@ -246,16 +246,16 @@ global_frame_orientation = "J2000"
 body_settings = dynamics.environment_setup.get_default_body_settings(
    bodies_to_create, global_frame_origin, global_frame_orientation)
 
-body_settings.add_empty_settings("Grace-FO A_keplerian")
-body_settings.add_empty_settings("Grace-FO B_keplerian")
-body_settings.add_empty_settings("Grace-FO A_j0j2")
-body_settings.add_empty_settings("Grace-FO B_j0j2")
+body_settings.add_empty_settings("GRACE C_keplerian")
+body_settings.add_empty_settings("GRACE D_keplerian")
+body_settings.add_empty_settings("GRACE C_j0j2")
+body_settings.add_empty_settings("GRACE D_j0j2")
 
 # Create system of bodies
 bodies = dynamics.environment_setup.create_system_of_bodies(body_settings)
 
 # Define bodies that are propagated
-bodies_to_propagate = ["Grace-FO A_keplerian", "Grace-FO B_keplerian", "Grace-FO A_j0j2", "Grace-FO B_j0j2"]
+bodies_to_propagate = ["GRACE C_keplerian", "GRACE D_keplerian", "GRACE C_j0j2", "GRACE D_j0j2"]
 
 # Define central bodies of propagation
 central_bodies = ["Earth", "Earth", "Earth", "Earth"]
@@ -273,8 +273,8 @@ j0j2_acceleration_settings_grace_fo = dict(
    )]
 )
 
-acceleration_settings = {"Grace-FO A_keplerian": keplerian_acceleration_settings_grace_fo, "Grace-FO B_keplerian": keplerian_acceleration_settings_grace_fo,
-                         "Grace-FO A_j0j2": j0j2_acceleration_settings_grace_fo, "Grace-FO B_j0j2": j0j2_acceleration_settings_grace_fo}
+acceleration_settings = {"GRACE C_keplerian": keplerian_acceleration_settings_grace_fo, "GRACE D_keplerian": keplerian_acceleration_settings_grace_fo,
+                         "GRACE C_j0j2": j0j2_acceleration_settings_grace_fo, "GRACE D_j0j2": j0j2_acceleration_settings_grace_fo}
 
 
 # Create acceleration models 
@@ -303,14 +303,14 @@ earth_gravitational_parameter = bodies.get("Earth").gravitational_parameter
 #
 ###################################################################
 
-# GRACE-FO B
+# GRACE D
 
-grace_fo_b_initial_altitude_km = 477.7
+grace_d_initial_altitude_km = 477.7
 earth_radius_km = bodies.get("Earth").shape_model.average_radius / 1e3
-grace_fo_b_initial_orbit_semi_major_axis_km = earth_radius_km + grace_fo_b_initial_altitude_km
+grace_d_initial_orbit_semi_major_axis_km = earth_radius_km + grace_d_initial_altitude_km
 
-grace_fo_b_initial_orbital_elements = OrbitalElements(
-                              a_km=grace_fo_b_initial_orbit_semi_major_axis_km,
+grace_d_initial_orbital_elements = OrbitalElements(
+                              a_km=grace_d_initial_orbit_semi_major_axis_km,
                               e=0.0019,
                               i_deg=89.0081,
                               raan_deg=0.0,
@@ -318,45 +318,45 @@ grace_fo_b_initial_orbital_elements = OrbitalElements(
                               M_deg=0.0,
                            )
 
-grace_fo_b_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
+grace_d_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
    gravitational_parameter=earth_gravitational_parameter,
-   semi_major_axis=grace_fo_b_initial_orbital_elements.a_km * 1e3,
-   eccentricity=grace_fo_b_initial_orbital_elements.e,
-   inclination=np.radians(grace_fo_b_initial_orbital_elements.i_deg),
-   longitude_of_ascending_node=np.radians(grace_fo_b_initial_orbital_elements.raan_deg),
-   argument_of_periapsis=np.radians(grace_fo_b_initial_orbital_elements.argp_deg),
+   semi_major_axis=grace_d_initial_orbital_elements.a_km * 1e3,
+   eccentricity=grace_d_initial_orbital_elements.e,
+   inclination=np.radians(grace_d_initial_orbital_elements.i_deg),
+   longitude_of_ascending_node=np.radians(grace_d_initial_orbital_elements.raan_deg),
+   argument_of_periapsis=np.radians(grace_d_initial_orbital_elements.argp_deg),
    true_anomaly=element_conversion.mean_to_true_anomaly(
-                  mean_anomaly=np.radians(grace_fo_b_initial_orbital_elements.M_deg),
-                  eccentricity=grace_fo_b_initial_orbital_elements.e,
+                  mean_anomaly=np.radians(grace_d_initial_orbital_elements.M_deg),
+                  eccentricity=grace_d_initial_orbital_elements.e,
                ),
 )
 
 
-# GRACE-FO A
+# GRACE C
 
-grace_fo_a_initial_orbital_elements = grace_fo_b_initial_orbital_elements.get_along_track_shift(
+grace_c_initial_orbital_elements = grace_d_initial_orbital_elements.get_along_track_shift(
     separation_km=238.0
 )
-grace_fo_a_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
+grace_c_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
    gravitational_parameter=earth_gravitational_parameter,
-   semi_major_axis=grace_fo_a_initial_orbital_elements.a_km * 1e3,
-   eccentricity=grace_fo_a_initial_orbital_elements.e,
-   inclination=np.radians(grace_fo_a_initial_orbital_elements.i_deg),
-   longitude_of_ascending_node=np.radians(grace_fo_a_initial_orbital_elements.raan_deg),
-   argument_of_periapsis=np.radians(grace_fo_a_initial_orbital_elements.argp_deg),
+   semi_major_axis=grace_c_initial_orbital_elements.a_km * 1e3,
+   eccentricity=grace_c_initial_orbital_elements.e,
+   inclination=np.radians(grace_c_initial_orbital_elements.i_deg),
+   longitude_of_ascending_node=np.radians(grace_c_initial_orbital_elements.raan_deg),
+   argument_of_periapsis=np.radians(grace_c_initial_orbital_elements.argp_deg),
    true_anomaly=element_conversion.mean_to_true_anomaly(
-                  mean_anomaly=np.radians(grace_fo_a_initial_orbital_elements.M_deg),
-                  eccentricity=grace_fo_a_initial_orbital_elements.e,
+                  mean_anomaly=np.radians(grace_c_initial_orbital_elements.M_deg),
+                  eccentricity=grace_c_initial_orbital_elements.e,
               ),
    )
 
-initial_states = np.hstack((grace_fo_a_initial_state, grace_fo_b_initial_state, grace_fo_a_initial_state, grace_fo_b_initial_state))
+initial_states = np.hstack((grace_c_initial_state, grace_d_initial_state, grace_c_initial_state, grace_d_initial_state))
 
 dependent_variables_to_save = [
-    dynamics.propagation_setup.dependent_variable.total_acceleration("Grace-FO A_keplerian"),
-    dynamics.propagation_setup.dependent_variable.total_acceleration("Grace-FO B_keplerian"),
-    dynamics.propagation_setup.dependent_variable.total_acceleration("Grace-FO A_j0j2"),
-    dynamics.propagation_setup.dependent_variable.total_acceleration("Grace-FO B_j0j2"),
+    dynamics.propagation_setup.dependent_variable.total_acceleration("GRACE C_keplerian"),
+    dynamics.propagation_setup.dependent_variable.total_acceleration("GRACE D_keplerian"),
+    dynamics.propagation_setup.dependent_variable.total_acceleration("GRACE C_j0j2"),
+    dynamics.propagation_setup.dependent_variable.total_acceleration("GRACE D_j0j2"),
 ]
 
 # Create propagation settings
@@ -398,13 +398,13 @@ plotter = Plotter(output_path=Path("./GRACE-FO/plots"))
 
 acceleration_validation_results = {}
 scenarios = [
-    "GRACE-FO A — Point-Mass Earth Gravity Model",
-    "GRACE-FO B — Point-Mass Earth Gravity Model",
-    "GRACE-FO A — Earth Gravity Model (J0 + J2)",
-    "GRACE-FO B — Earth Gravity Model (J0 + J2)",
+    "GRACE C — Point-Mass Earth Gravity Model",
+    "GRACE D — Point-Mass Earth Gravity Model",
+    "GRACE C — Earth Gravity Model (J0 + J2)",
+    "GRACE D — Earth Gravity Model (J0 + J2)",
 ]
 
-for idx, satellite in enumerate(["Grace-FO A_keplerian", "Grace-FO B_keplerian", "Grace-FO A_j0j2", "Grace-FO B_j0j2"]):
+for idx, satellite in enumerate(["GRACE C_keplerian", "GRACE D_keplerian", "GRACE C_j0j2", "GRACE D_j0j2"]):
     position = states_array[:, 1 + idx * 6:4 + idx * 6]
     reference_acceleration = dependent_variables_array[:, 1 +idx * 3:4 + idx * 3]
     
@@ -433,19 +433,19 @@ los_intersatellite_acceleration_results = {}
 
 for idx, scenario in enumerate(scenarios):
 
-    grace_fo_a_position = states_array[:, 1 + idx * 12:4 + idx * 12]
-    grace_fo_b_position = states_array[:, 7 + idx * 12:10 + idx * 12]
+    grace_c_position = states_array[:, 1 + idx * 12:4 + idx * 12]
+    grace_d_position = states_array[:, 7 + idx * 12:10 + idx * 12]
 
-    grace_fo_a_acceleration = dependent_variables_array[:, 1 + idx * 6:4 + idx * 6]
-    grace_fo_b_acceleration = dependent_variables_array[:, 4 + idx * 6:7 + idx * 6]
+    grace_c_acceleration = dependent_variables_array[:, 1 + idx * 6:4 + idx * 6]
+    grace_d_acceleration = dependent_variables_array[:, 4 + idx * 6:7 + idx * 6]
 
     los_intersatellite_acceleration_results[cases[idx]] = validate_los_inter_satellite_acceleration(
         scenario=scenario,
         time=time,
-        target_position=grace_fo_a_position,
-        chaser_position=grace_fo_b_position,
-        target_acceleration=grace_fo_a_acceleration,
-        chaser_acceleration=grace_fo_b_acceleration,
+        target_position=grace_c_position,
+        chaser_position=grace_d_position,
+        target_acceleration=grace_c_acceleration,
+        chaser_acceleration=grace_d_acceleration,
         accuracy_orders=accuracy_orders,
         plotter=plotter,
     )

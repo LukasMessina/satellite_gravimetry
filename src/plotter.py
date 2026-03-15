@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 from matplotlib.lines import Line2D
 from matplotlib.ticker import ScalarFormatter
-from helpers import transform_vector_history_inertial_to_satellite_frame
+from helpers import transform_vector_history_inertial_to_satellite_frame, transform_vector_history_inertial_to_rtn
+from matplotlib.ticker import FormatStrFormatter
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
+
 
 import matplotlib as mpl
 mpl.use("Agg") 
@@ -113,7 +116,7 @@ class Plotter:
         file_name: str,
     ) -> None:
         """
-        Plot GRACE-FO A/B body-frame attitude triads at a selected epoch.
+        Plot GRACE C/B body-frame attitude triads at a selected epoch.
 
         The view is centered at the midpoint between both satellites and uses
         a plotting box to keep all axes equally scaled.
@@ -134,29 +137,29 @@ class Plotter:
             )
 
         if len(grace_fo_position_data) != 2:
-            raise ValueError("grace_fo_position_data must contain two arrays: GRACE-FO A and GRACE-FO B.")
+            raise ValueError("grace_fo_position_data must contain two arrays: GRACE C and GRACE D.")
 
-        grace_fo_a_position_history = np.asarray(grace_fo_position_data[0], dtype=float)
-        grace_fo_b_position_history = np.asarray(grace_fo_position_data[1], dtype=float)
-        if grace_fo_a_position_history.ndim != 2 or grace_fo_b_position_history.ndim != 2:
+        grace_c_position_history = np.asarray(grace_fo_position_data[0], dtype=float)
+        grace_d_position_history = np.asarray(grace_fo_position_data[1], dtype=float)
+        if grace_c_position_history.ndim != 2 or grace_d_position_history.ndim != 2:
             raise ValueError("Satellite position arrays must be 2D with shape (N, 3).")
-        if grace_fo_a_position_history.shape[1] != 3 or grace_fo_b_position_history.shape[1] != 3:
+        if grace_c_position_history.shape[1] != 3 or grace_d_position_history.shape[1] != 3:
             raise ValueError("Satellite position arrays must have 3 columns (x, y, z).")
-        if epoch_idx >= grace_fo_a_position_history.shape[0] or epoch_idx >= grace_fo_b_position_history.shape[0]:
+        if epoch_idx >= grace_c_position_history.shape[0] or epoch_idx >= grace_d_position_history.shape[0]:
             raise IndexError(
                 f"epoch_idx={epoch_idx} is out of bounds for provided position history lengths "
             )
 
-        grace_fo_a_position = grace_fo_a_position_history[epoch_idx]
-        grace_fo_b_position = grace_fo_b_position_history[epoch_idx]
+        grace_c_position = grace_c_position_history[epoch_idx]
+        grace_d_position = grace_d_position_history[epoch_idx]
 
-        rotation_inertial_to_body_grace_fo_a = dependent_variables_array[epoch_idx, 17:26].reshape(3, 3)
-        rotation_inertial_to_body_grace_fo_b = dependent_variables_array[epoch_idx, 26:35].reshape(3, 3)
-        rotation_body_to_inertial_grace_fo_a = rotation_inertial_to_body_grace_fo_a.T
-        rotation_body_to_inertial_grace_fo_b = rotation_inertial_to_body_grace_fo_b.T
+        rotation_inertial_to_body_grace_c = dependent_variables_array[epoch_idx, 17:26].reshape(3, 3)
+        rotation_inertial_to_body_grace_d = dependent_variables_array[epoch_idx, 26:35].reshape(3, 3)
+        rotation_body_to_inertial_grace_c = rotation_inertial_to_body_grace_c.T
+        rotation_body_to_inertial_grace_d = rotation_inertial_to_body_grace_d.T
 
-        midpoint = 0.5 * (grace_fo_a_position + grace_fo_b_position)
-        separation = np.linalg.norm(grace_fo_b_position - grace_fo_a_position)
+        midpoint = 0.5 * (grace_c_position + grace_d_position)
+        separation = np.linalg.norm(grace_d_position - grace_c_position)
         # Set triad scale and plotting box size based on satellite separation to ensure good visibility and equal axis scaling
         triad_scale = max(1.0, 0.2 * separation)
         box_half_extent = 0.5 * separation + 2.0 * triad_scale
@@ -192,14 +195,14 @@ class Plotter:
                 bbox={"fc": "w", "alpha": 0.8, "boxstyle": "circle,pad=0.25"},
             )
 
-        _plot_triad(grace_fo_a_position, rotation_body_to_inertial_grace_fo_a, "A")
-        _plot_triad(grace_fo_b_position, rotation_body_to_inertial_grace_fo_b, "B")
+        _plot_triad(grace_c_position, rotation_body_to_inertial_grace_c, "A")
+        _plot_triad(grace_d_position, rotation_body_to_inertial_grace_d, "B")
 
         legend_handles = [
             Line2D([0], [0], marker="o", linestyle="None", color="k",
-                markersize=6, label="A: GRACE-FO A"),
+                markersize=6, label="A: GRACE C"),
             Line2D([0], [0], marker="o", linestyle="None", color="k",
-                markersize=6, label="B: GRACE-FO B"),
+                markersize=6, label="B: GRACE D"),
         ]
 
         ax.legend(
@@ -220,7 +223,7 @@ class Plotter:
         ax.set_xlabel("x [m]", fontsize=8)
         ax.set_ylabel("y [m]", fontsize=8)
         ax.set_zlabel("z [m]", fontsize=8)
-        ax.set_title(f"GRACE-FO attitude triads - epoch index {epoch_idx}", fontsize=10)
+        ax.set_title(f"GRACE Cttitude triads - epoch index {epoch_idx}", fontsize=10)
 
         for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
             formatter = ScalarFormatter(useMathText=True)
@@ -237,7 +240,11 @@ class Plotter:
         plt.close(fig)
     
     @staticmethod
-    def _set_equal_3d_axes(ax, data: np.ndarray) -> None:
+    def _set_equal_3d_axes(
+        ax, 
+        data: np.ndarray, 
+        additional_plane_padding: bool = False
+        ) -> None:
         """Set 3D plot axes to equal scale."""
         x, y, z = data[:, 0], data[:, 1], data[:, 2]
         max_range = np.array([x.max() - x.min(),
@@ -250,7 +257,56 @@ class Plotter:
         ax.set_xlim(mid_x - max_range, mid_x + max_range)
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
+        if additional_plane_padding:
+            padding = 0.15 * max_range
+            ax.set_xlim(mid_x - max_range - padding, mid_x + max_range + padding)
+            ax.set_ylim(mid_y - max_range - padding, mid_y + max_range + padding)
+            ax.set_zlim(mid_z - max_range - padding, mid_z + max_range + padding)
         ax.set_box_aspect([1, 1, 1])
+
+    @staticmethod
+    def _plot_3d_box_projections(
+        ax,
+        x_data: np.ndarray,
+        y_data: np.ndarray,
+        z_data: np.ndarray,
+        color: str = "#4A4A4A",
+        linewidth: float = 1.2,
+        alpha: float = 0.85,
+    ) -> None:
+        """Project a 3D trajectory onto three bounding planes of the current axes box."""
+
+        x_min, _ = ax.get_xlim3d()
+        _, y_max = ax.get_ylim3d()
+        z_min, _ = ax.get_zlim3d()
+
+        ax.plot(
+            np.full_like(x_data, x_min, dtype=float),
+            y_data,
+            z_data,
+            color=color,
+            linewidth=linewidth,
+            alpha=alpha,
+            zorder=1,
+        )
+        ax.plot(
+            x_data,
+            np.full_like(y_data, y_max, dtype=float),
+            z_data,
+            color=color,
+            linewidth=linewidth,
+            alpha=alpha,
+            zorder=1,
+        )
+        ax.plot(
+            x_data,
+            y_data,
+            np.full_like(z_data, z_min, dtype=float),
+            color=color,
+            linewidth=linewidth,
+            alpha=alpha,
+            zorder=1,
+        )
 
     @staticmethod
     def _add_earth(ax, texture_path: Path | None) -> None:
@@ -295,8 +351,11 @@ class Plotter:
         )
 
 
-    def plot_relative_position(self, time_data, position_data, velocity_data, title, file_name):
-        """Plot the relative position in the RTN frame between the satellites pair over time."""
+    def plot_relative_position(self, time_data, position_data, velocity_data, first_figure_title, first_file_name, second_figure_title, second_file_name):
+        """
+        Plot the relative position components in the RTN frame between the satellites pair over time and
+        the 3 dimensional relative position time history in the RTN refernce frame of the chaser satellite.
+        """
 
         t_days = (time_data - time_data[0]) / 86400.0
         # Along-track distance computation (RTN of chaser satellite)
@@ -324,13 +383,165 @@ class Plotter:
         plt.plot(t_days, cross_track_distance, linewidth=2.8, linestyle=":", label="Cross-track (N)", color="tab:green")
         plt.plot(t_days, relative_position_norm, linewidth=1.5, linestyle="-.", label=r"Range ($\rho$)", color="tab:red")
 
-        plt.title(title)
+        plt.title(first_figure_title)
         plt.xlabel("Propagation time [days]")
         plt.ylabel("Distance [km]")
         plt.grid(True)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(self.output_path / file_name)
+        plt.savefig(self.output_path / first_file_name)
+
+        fig = plt.figure(figsize=(11, 8.2), dpi=300)
+        ax = fig.add_subplot(111, projection="3d")
+
+        # Crop the data for better visualization of the relative trajectory shape
+        cross_track_distance = cross_track_distance[:86400*2]
+        radial_distance = radial_distance[:86400*2]
+        along_track_distance = along_track_distance[:86400*2]
+        propagation_time_hours = ((time_data - time_data[0]) / 3600.0)[:86400*2]
+
+
+        ax.xaxis.set_major_formatter(FormatStrFormatter('%.1e'))
+        ax.yaxis.set_major_formatter(FormatStrFormatter('%.1e'))
+        ax.zaxis.set_major_formatter(FormatStrFormatter('%.2e'))
+
+        relative_position_rtn = np.column_stack(
+            (cross_track_distance * 1e3, radial_distance * 1e3, along_track_distance * 1e3)
+        )
+        trajectory_colored_segments = np.stack(
+            (relative_position_rtn[:-1], relative_position_rtn[1:]),
+            axis=1,
+        )
+        trajectory_color_norm = mpl.colors.Normalize(
+            vmin=propagation_time_hours[0],
+            vmax=propagation_time_hours[-1],
+        )
+        trajectory_collection = Line3DCollection(
+            trajectory_colored_segments,
+            cmap="viridis",
+            norm=trajectory_color_norm,
+            linewidth=1.5,
+        )
+        trajectory_collection.set_array(propagation_time_hours[:-1])
+        ax.add_collection3d(trajectory_collection)
+
+
+        ax.set_title(second_figure_title, fontsize=13)
+        ax.set_xlabel("N [m]", labelpad=8)
+        ax.set_ylabel("R [m]", labelpad=24)
+        ax.set_zlabel("T [m]", labelpad=30)
+        ax.grid(True)
+        self._set_equal_3d_axes(ax, data=relative_position_rtn, additional_plane_padding=True)
+        self._plot_3d_box_projections(
+            ax,
+            relative_position_rtn[:, 0],
+            relative_position_rtn[:, 1],
+            relative_position_rtn[:, 2],
+        )
+
+        ax.tick_params(axis="x", which="major", pad=2)
+        ax.tick_params(axis="y", which="major", pad=14)
+        ax.tick_params(axis="z", which="major", pad=18)
+
+        colorbar = fig.colorbar(
+            trajectory_collection,
+            ax=ax,
+            pad=0.08,
+            fraction=0.035,
+            shrink=0.82,
+        )
+        colorbar.set_label("Propagation time [hours]", rotation=90, labelpad=14)
+
+
+        fig.tight_layout(rect=(0.0, 0.0, 0.92, 1.0))
+        fig.savefig(self.output_path / second_file_name, bbox_inches="tight", pad_inches=0.25)
+        plt.close(fig)
+
+    def plot_custom_acceleration_time_series(
+        self,
+        dependent_variables_array: np.ndarray,
+        states_array: np.ndarray,
+        first_figure_title: str = "Thrust acceleration norm time evolution — GRACE-C",
+        second_figure_title: str = "Thrust acceleration RTN components time evolution — GRACE-C",
+    ) -> None:
+        """
+        Plot the custom acceleration norm and RTN components for GRACE-C.
+
+        The RTN reference frame is built from the instantaneous GRACE-C state vector.
+        """
+
+        dependent_variables_array = np.asarray(dependent_variables_array, dtype=float)
+        states_array = np.asarray(states_array, dtype=float)
+
+        if dependent_variables_array.ndim != 2 or dependent_variables_array.shape[1] < 50:
+            raise ValueError(
+                "dependent_variables_array must be 2D with at least 50 columns to include custom acceleration."
+            )
+        if states_array.ndim != 2 or states_array.shape[1] < 7:
+            raise ValueError("states_array must be 2D with at least 7 columns.")
+
+        time_seconds = dependent_variables_array[:, 0]
+        time_hours = (time_seconds - time_seconds[0]) / 3600.0
+
+        inertial_thrust_acceleration = dependent_variables_array[:, 47:50]
+        inertial_thrust_acceleration_acceleration_norm = np.linalg.norm(inertial_thrust_acceleration, axis=1)
+
+        grace_c_position_history = states_array[:, 1:4]
+        grace_c_velocity_history = states_array[:, 4:7]
+        thrust_acceleration_rtn = transform_vector_history_inertial_to_rtn(
+            inertial_thrust_acceleration,
+            grace_c_position_history,
+            grace_c_velocity_history,
+        )
+
+        fig = plt.figure(figsize=(9.0, 5.0), dpi=300)
+        ax = fig.add_subplot(111)
+        ax.plot(
+            time_hours,
+            inertial_thrust_acceleration_acceleration_norm,
+            "-o",
+            color="tab:blue",
+            linewidth=1.5,
+            markersize=2.5,
+        )
+        ax.set_title(first_figure_title)
+        ax.set_xlabel("Propagation time [hours]")
+        ax.set_ylabel(r"$\|a_{\mathrm{thrust}}\|$ [m/s$^2$]")
+        ax.grid(True)
+        fig.tight_layout()
+        fig.savefig(
+            self.output_path / "grace_c_thrust_acc_norm_time_evolution.png",
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+        fig = plt.figure(figsize=(9.0, 5.0), dpi=300)
+        ax = fig.add_subplot(111)
+        component_labels = ("R", "T", "N")
+        component_colors = ("tab:blue", "tab:orange", "tab:green")
+
+        for component_idx, (component_label, component_color) in enumerate(
+            zip(component_labels, component_colors)
+        ):
+            ax.plot(
+                time_hours,
+                thrust_acceleration_rtn[:, component_idx],
+                color=component_color,
+                linewidth=2.2,
+                label=component_label,
+            )
+
+        ax.set_title(second_figure_title)
+        ax.set_xlabel("Propagation time [hours]")
+        ax.set_ylabel(r"$a_{\mathrm{thrust,RTN}}$ [m/s$^2$]")
+        ax.grid(True)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(
+            self.output_path / "grace_c_thrust_acc_rtn_components_time_evolution.png",
+            bbox_inches="tight",
+        )
+        plt.close(fig)
 
     def plot_rtn_error_projections(self, samples_rtn: np.ndarray, sigma_rtn: np.ndarray, file_name: str):
         """Plot RTN projections of noise samples with 1σ/2σ/3σ ellipses."""
@@ -826,7 +1037,7 @@ class Plotter:
 
         ax.set_xlabel("Time [s]")
         ax.set_ylabel("Residual APC coupling jitter noise [m]")
-        satellite_label = "Grace-C" if satellite == "Grace-FO_A" else "Grace-D"
+        satellite_label = "GRACE C" if satellite == "GRACE C" else "GRACE D"
         ax.set_title(f"Residual APC Coupling Jitter Noise - {satellite_label}")
         ax.grid(True, which="both", linestyle="--", alpha=0.6)
 
@@ -841,7 +1052,7 @@ class Plotter:
         components_title_prefix: str = "SRP acceleration component",
     ) -> None:
         """
-        Plot SRP acceleration norm time evolution for GRACE-FO A and GRACE-FO B,
+        Plot SRP acceleration norm time evolution for GRACE C and GRACE D,
         and additionally create 3 separate figures for the SRP acceleration components
         (x, y, z) for both satellites.
         """
@@ -856,15 +1067,15 @@ class Plotter:
         time_seconds = dependent_variables_array[:num_samples, 0]
         time_hours = (time_seconds - time_seconds[0]) / 3600.0
 
-        srp_acc_norm_grace_fo_a = dependent_variables_array[:num_samples, 1]
-        srp_acc_norm_grace_fo_b = dependent_variables_array[:num_samples, 2]
+        srp_acc_norm_grace_c = dependent_variables_array[:num_samples, 1]
+        srp_acc_norm_grace_d = dependent_variables_array[:num_samples, 2]
 
         norm_file_name = "grace_fo_srp_acc_norm_time_evolution.png"
 
         fig = plt.figure(figsize=(9.0, 5.0), dpi=300)
         ax = fig.add_subplot(111)
-        ax.plot(time_hours, srp_acc_norm_grace_fo_a, color="#5307A0", linewidth=2.5, label="GRACE-FO A")
-        ax.plot(time_hours, srp_acc_norm_grace_fo_b, color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE-FO B")
+        ax.plot(time_hours, srp_acc_norm_grace_c, color="#5307A0", linewidth=2.5, label="GRACE C")
+        ax.plot(time_hours, srp_acc_norm_grace_d, color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE D")
         ax.set_title(norm_title)
         ax.set_xlabel("Propagation time [hours]")
         ax.set_ylabel(r"$\|a_{\mathrm{SRP}}\|$ [m/s$^2$]")
@@ -874,15 +1085,15 @@ class Plotter:
         fig.savefig(self.output_path / norm_file_name, bbox_inches="tight")
         plt.close(fig)
 
-        srp_acc_j2000_grace_fo_a = dependent_variables_array[:num_samples, 3:6]  # [ax, ay, az]
-        srp_acc_j2000_grace_fo_b = dependent_variables_array[:num_samples, 6:9]  # [ax, ay, az]
-        rotation_j2000_to_sf_grace_fo_a = dependent_variables_array[:num_samples, 17:26]
-        rotation_j2000_to_sf_grace_fo_b = dependent_variables_array[:num_samples, 26:35]
-        srp_acc_sf_grace_fo_a = transform_vector_history_inertial_to_satellite_frame(
-            srp_acc_j2000_grace_fo_a, rotation_j2000_to_sf_grace_fo_a
+        srp_acc_j2000_grace_c = dependent_variables_array[:num_samples, 3:6]  # [ax, ay, az]
+        srp_acc_j2000_grace_d = dependent_variables_array[:num_samples, 6:9]  # [ax, ay, az]
+        rotation_j2000_to_sf_grace_c = dependent_variables_array[:num_samples, 17:26]
+        rotation_j2000_to_sf_grace_d = dependent_variables_array[:num_samples, 26:35]
+        srp_acc_sf_grace_c = transform_vector_history_inertial_to_satellite_frame(
+            srp_acc_j2000_grace_c, rotation_j2000_to_sf_grace_c
         )
-        srp_acc_sf_grace_fo_b = transform_vector_history_inertial_to_satellite_frame(
-            srp_acc_j2000_grace_fo_b, rotation_j2000_to_sf_grace_fo_b
+        srp_acc_sf_grace_d = transform_vector_history_inertial_to_satellite_frame(
+            srp_acc_j2000_grace_d, rotation_j2000_to_sf_grace_d
         )
 
         comp_labels = ["x", "y", "z"]
@@ -890,8 +1101,8 @@ class Plotter:
             fig = plt.figure(figsize=(9.0, 5.0), dpi=300)
             ax = fig.add_subplot(111)
 
-            ax.plot(time_hours, srp_acc_sf_grace_fo_a[:, j], color="#5307A0", linewidth=2.5, label="GRACE-FO A")
-            ax.plot(time_hours, srp_acc_sf_grace_fo_b[:, j], color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE-FO B")
+            ax.plot(time_hours, srp_acc_sf_grace_c[:, j], color="#5307A0", linewidth=2.5, label="GRACE C")
+            ax.plot(time_hours, srp_acc_sf_grace_d[:, j], color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE D")
 
             ax.set_title(f"{components_title_prefix} {comp}_SF time evolution — GRACE-FO")
             ax.set_xlabel("Propagation time [hours]")
@@ -914,7 +1125,7 @@ class Plotter:
         components_title_prefix: str = "Aerodynamic acceleration component",
     ) -> None:
         """
-        Plot aerodynamic acceleration norm time evolution for GRACE-FO A and GRACE-FO B,
+        Plot aerodynamic acceleration norm time evolution for GRACE C and GRACE D,
         and additionally create 3 separate figures for the aerodynamic acceleration components
         (x, y, z) for both satellites.
         """
@@ -929,15 +1140,15 @@ class Plotter:
         time_seconds = dependent_variables_array[:num_samples, 0]
         time_hours = (time_seconds - time_seconds[0]) / 3600.0
 
-        aero_acc_norm_grace_fo_a = dependent_variables_array[:num_samples, 9]
-        aero_acc_norm_grace_fo_b = dependent_variables_array[:num_samples, 10]
+        aero_acc_norm_grace_c = dependent_variables_array[:num_samples, 9]
+        aero_acc_norm_grace_d = dependent_variables_array[:num_samples, 10]
 
         norm_file_name = "grace_fo_aero_acc_norm_time_evolution.png"
 
         fig = plt.figure(figsize=(9.0, 5.0), dpi=300)
         ax = fig.add_subplot(111)
-        ax.plot(time_hours, aero_acc_norm_grace_fo_a, color="#5307A0", linewidth=2.5, label="GRACE-FO A")
-        ax.plot(time_hours, aero_acc_norm_grace_fo_b, color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE-FO B")
+        ax.plot(time_hours, aero_acc_norm_grace_c, color="#5307A0", linewidth=2.5, label="GRACE-C")
+        ax.plot(time_hours, aero_acc_norm_grace_d, color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE-D")
         ax.set_title(norm_title)
         ax.set_xlabel("Propagation time [hours]")
         ax.set_ylabel(r"$\|a_{\mathrm{aero}}\|$ [m/s$^2$]")
@@ -947,15 +1158,15 @@ class Plotter:
         fig.savefig(self.output_path / norm_file_name, bbox_inches="tight")
         plt.close(fig)
 
-        aero_acc_j2000_grace_fo_a = dependent_variables_array[:num_samples, 11:14]  # [ax, ay, az]
-        aero_acc_j2000_grace_fo_b = dependent_variables_array[:num_samples, 14:17]  # [ax, ay, az]
-        rotation_j2000_to_sf_grace_fo_a = dependent_variables_array[:num_samples, 17:26]
-        rotation_j2000_to_sf_grace_fo_b = dependent_variables_array[:num_samples, 26:35]
-        aero_acc_sf_grace_fo_a = transform_vector_history_inertial_to_satellite_frame(
-            aero_acc_j2000_grace_fo_a, rotation_j2000_to_sf_grace_fo_a
+        aero_acc_j2000_grace_c = dependent_variables_array[:num_samples, 11:14]  # [ax, ay, az]
+        aero_acc_j2000_grace_d = dependent_variables_array[:num_samples, 14:17]  # [ax, ay, az]
+        rotation_j2000_to_sf_grace_c = dependent_variables_array[:num_samples, 17:26]
+        rotation_j2000_to_sf_grace_d = dependent_variables_array[:num_samples, 26:35]
+        aero_acc_sf_grace_c = transform_vector_history_inertial_to_satellite_frame(
+            aero_acc_j2000_grace_c, rotation_j2000_to_sf_grace_c
         )
-        aero_acc_sf_grace_fo_b = transform_vector_history_inertial_to_satellite_frame(
-            aero_acc_j2000_grace_fo_b, rotation_j2000_to_sf_grace_fo_b
+        aero_acc_sf_grace_d = transform_vector_history_inertial_to_satellite_frame(
+            aero_acc_j2000_grace_d, rotation_j2000_to_sf_grace_d
         )
 
         comp_labels = ["x", "y", "z"]
@@ -963,8 +1174,8 @@ class Plotter:
             fig = plt.figure(figsize=(9.0, 5.0), dpi=300)
             ax = fig.add_subplot(111)
 
-            ax.plot(time_hours, aero_acc_sf_grace_fo_a[:, j], color="#5307A0", linewidth=2.5, label="GRACE-FO A")
-            ax.plot(time_hours, aero_acc_sf_grace_fo_b[:, j], color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE-FO B")
+            ax.plot(time_hours, aero_acc_sf_grace_c[:, j], color="#5307A0", linewidth=2.5, label="GRACE-C")
+            ax.plot(time_hours, aero_acc_sf_grace_d[:, j], color="#22CE9D", linewidth=2.5, linestyle="--", label="GRACE-D")
 
             ax.set_title(f"{components_title_prefix} {comp}_SF time evolution — GRACE-FO")
             ax.set_xlabel("Propagation time [hours]")
@@ -982,23 +1193,23 @@ class Plotter:
     def plot_eccentricity_time_evolution(
             self,
             time_data: np.ndarray,
-            grace_fo_a_eccentricity_history: np.ndarray,
-            grace_fo_b_eccentricity_history: np.ndarray,
+            grace_c_eccentricity_history: np.ndarray,
+            grace_d_eccentricity_history: np.ndarray,
     )-> None:
-        """Plot the eccentricity time evolution for GRACE-FO A and GRACE-FO B."""
+        """Plot the eccentricity time evolution for GRACE C and GRACE D."""
 
         if time_data.ndim != 1:
             raise ValueError("time_data must be a 1D array.")
-        if grace_fo_a_eccentricity_history.shape != time_data.shape:
-            raise ValueError("grace_fo_a_eccentricity_history must have the same shape as time_data.")
-        if grace_fo_b_eccentricity_history.shape != time_data.shape:
-            raise ValueError("grace_fo_b_eccentricity_history must have the same shape as time_data.")
+        if grace_c_eccentricity_history.shape != time_data.shape:
+            raise ValueError("grace_c_eccentricity_history must have the same shape as time_data.")
+        if grace_d_eccentricity_history.shape != time_data.shape:
+            raise ValueError("grace_d_eccentricity_history must have the same shape as time_data.")
 
         elapsed_time_days = (time_data - time_data[0]) / 86400.0
 
         fig, ax = plt.subplots(figsize=(12, 3), dpi=200)
-        ax.plot(elapsed_time_days, grace_fo_a_eccentricity_history, label="GRACE-FO A", linewidth=1.6)
-        ax.plot(elapsed_time_days, grace_fo_b_eccentricity_history, label="GRACE-FO B", linewidth=1.6, linestyle="--")
+        ax.plot(elapsed_time_days, grace_c_eccentricity_history, label="GRACE C", linewidth=1.6)
+        ax.plot(elapsed_time_days, grace_d_eccentricity_history, label="GRACE D", linewidth=1.6, linestyle="--")
         ax.set_title("GRACE-FO eccentricity time evolution")
         ax.set_xlabel("Time since simulation start [days]")
         ax.set_ylabel("Eccentricity [-]")
