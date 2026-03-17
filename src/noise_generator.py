@@ -1,8 +1,6 @@
 """ Noise Generator Module """
 
-from random import seed
 from typing import List
-from scipy.stats import qmc, norm
 from helpers import rtn_basis
 from pathlib import Path
 from plotter import Plotter
@@ -18,28 +16,15 @@ class NoiseGenerator:
 
     @staticmethod
     def generate_gps_position_noise(state_vector: np.ndarray, sigma_rtn: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:
-        """ Generate GPS position measurement noise in RTN frame using Sobol sequences and Gaussian distribution."""
+        """ Generate GPS position measurement noise in RTN frame using Gaussian draws."""
 
         num_epochs = state_vector.shape[0]
-
-        # Smallest exponent m such that 2**m >= num_epochs
-        exponent_num_samples = int(np.ceil(np.log2(num_epochs)))
         
         eci_position_errors = np.empty((num_epochs, 3))
         rtn_position_errors = np.empty((num_epochs, 3))
 
-        eps = np.finfo(np.float64).eps
-
-        # Generate Sobol samples
-        sampler = qmc.Sobol(d=3, scramble=True, rng=seed)
-        sobol_samples = sampler.random_base2(m=exponent_num_samples)
-        sobol_samples = np.clip(sobol_samples, eps, 1.0 - eps)
-
-        # Transform to normal distribution
-        normal_distribution_samples = norm.ppf(sobol_samples)
-
-        # Scale by standard deviation
-        position_errors_rtn = normal_distribution_samples[:num_epochs, 0:3] * sigma_rtn
+        rng = np.random.default_rng(seed)
+        position_errors_rtn = rng.normal(0.0, sigma_rtn, size=(num_epochs, 3))
 
         for k in range(num_epochs):
             r = state_vector[k, 0:3]
@@ -124,18 +109,8 @@ class NoiseGenerator:
             # Create white noise time series 
             standard_deviation = white_noise_asd_values[file_prefix] * np.sqrt(1 / (2 * time_step))
 
-            # Smallest exponent m such that 2**m >= num_epochs
-            exponent_num_samples = int(np.ceil(np.log2(num_epochs)))
-
-            eps = np.finfo(np.float64).eps
-
-            # Generate Sobol samples
-            sampler = qmc.Sobol(d=1, scramble=True, rng=seed)
-            sobol_samples = sampler.random_base2(m=exponent_num_samples)
-            sobol_samples = np.clip(sobol_samples, eps, 1.0 - eps)
-
-            # Transform to normal distribution
-            white_noise_samples = norm.ppf(sobol_samples)[:num_epochs, 0]*standard_deviation
+            rng = np.random.default_rng(seed)
+            white_noise_samples = rng.normal(0.0, standard_deviation, size=num_epochs)
 
             # Transform to TimeSeries
             white_noise_time_series = types.timeseries.TimeSeries(
@@ -189,18 +164,74 @@ class NoiseGenerator:
         plotter: Plotter,
         num_epochs: int,
         seed: int,
+        noise_model_version: int,
         )-> types.TimeSeries:
         """ Generate system and oscillator noise time series. """
 
-        # Create a regular frequency span
         time_step = 5.0  # seconds
         delta_f = 1.0 / (num_epochs * time_step)
-        frequency_interval = [delta_f, 1e-1 + delta_f]  # Hz
-        frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
-        analytical_asd = 1e-6 * np.sqrt(1 + (0.0018 / frequencies_uniform_span)**4)  # [m Hz^-1/2]
-        analytical_psd = (1e-6 * np.sqrt(1 + (0.0018 / frequencies_uniform_span)**4))**2  # [m^2 Hz^-1]
 
+        if noise_model_version == 1:
 
+            # Create white noise time series 
+            standard_deviation = 2e-3
+
+            # The frequency uniform is compute solely for plotting purposes
+            frequency_interval = [0, 1/(2*time_step)]  # Hz
+            frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
+            analytical_asd = np.full_like(frequencies_uniform_span, standard_deviation * np.sqrt(2 * time_step))
+
+            rng = np.random.default_rng(seed)
+            samples = rng.normal(0, standard_deviation, size=num_epochs)
+
+            # Transform to TimeSeries
+            noise_time_series = types.timeseries.TimeSeries(
+                samples,
+                delta_t=time_step,
+            )
+
+        else:
+
+            # Create a regular frequency span
+            frequency_interval = [delta_f, 1e-1 + delta_f]  # Hz
+            frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
+            analytical_asd = 1e-6 * np.sqrt(1 + (0.0018 / frequencies_uniform_span)**4)  # [m Hz^-1/2]
+            analytical_psd = (1e-6 * np.sqrt(1 + (0.0018 / frequencies_uniform_span)**4))**2  # [m^2 Hz^-1]
+
+            # Convert ASD to PSD
+            analytical_psd = types.frequencyseries.FrequencySeries(analytical_psd, delta_f)
+
+            # Generate noise using the PSD, sample rate of 5 seconds for a time span of 31 days
+            num_samples = num_epochs 
+            noise_time_series = noise.gaussian.noise_from_psd(num_samples, time_step, analytical_psd, seed)
+
+            # Estimate PSD of time series via Welch
+            segment_len = int(num_samples // 3)
+
+            # 50% overlap
+            seg_stride = segment_len // 2
+
+            estimated_psd = psd.welch(noise_time_series, seg_len=segment_len, seg_stride=seg_stride)
+
+            # Extract frequency and PSD values from estimated PSD
+            estimated_frequencies = estimated_psd.sample_frequencies.numpy()
+            estimated_psd_values = estimated_psd.numpy()
+
+            input_frequencies = analytical_psd.sample_frequencies.numpy()
+            input_psd_values = analytical_psd.numpy()
+
+            plotter.plot_welch_estimated_psd_comparison(
+                estimated_frequencies,
+                estimated_psd_values,
+                input_frequencies,
+                input_psd_values,
+                file_name=f"kbr_system_and_oscillator_welch_estimated_psd_comparison.png",
+                ordinate_label=r"PSD [m$^2$ Hz$^{-1}$]",
+                title="KBR System and Oscillator PSD",
+                x_limit_inf=0.8e-5,
+                x_limit_sup=1e-1,
+            )
+            
         # Plot original vs interpolated data
         plotter.plot_kbr_system_and_oscillator_asd(
             frequencies_uniform_span,
@@ -208,46 +239,12 @@ class NoiseGenerator:
             file_name=f"kbr_system_and_oscillator_asd.png"
         )
 
-        # Convert ASD to PSD
-        analytical_psd = types.frequencyseries.FrequencySeries(analytical_psd, delta_f)
-
-        # Generate noise using the PSD, sample rate of 5 seconds for a time span of 31 days
-        num_samples = num_epochs 
-        noise_time_series = noise.gaussian.noise_from_psd(num_samples, time_step, analytical_psd, seed)
-
-        # Print noise time series and basic stats
+        # Plot noise time series
         plotter.plot_kbr_system_and_oscillator_noise_time_series(
             noise_time_series,
             file_name=f"kbr_system_and_oscillator_noise_time_series.png",
         )
 
-        # Estimate PSD of time series via Welch
-        segment_len = int(num_samples // 3)
-
-        # 50% overlap
-        seg_stride = segment_len // 2
-
-        estimated_psd = psd.welch(noise_time_series, seg_len=segment_len, seg_stride=seg_stride)
-
-        # Extract frequency and PSD values from estimated PSD
-        estimated_frequencies = estimated_psd.sample_frequencies.numpy()
-        estimated_psd_values = estimated_psd.numpy()
-
-        input_frequencies = analytical_psd.sample_frequencies.numpy()
-        input_psd_values = analytical_psd.numpy()
-
-        plotter.plot_welch_estimated_psd_comparison(
-            estimated_frequencies,
-            estimated_psd_values,
-            input_frequencies,
-            input_psd_values,
-            file_name=f"kbr_system_and_oscillator_welch_estimated_psd_comparison.png",
-            ordinate_label=r"PSD [m$^2$ Hz$^{-1}$]",
-            title="KBR System and Oscillator PSD",
-            x_limit_inf=0.8e-5,
-            x_limit_sup=1e-1,
-        )
-        
         return noise_time_series
     
     def generate_kbr_range_noise(
@@ -350,11 +347,10 @@ class NoiseGenerator:
         rot_matrices_sf_to_j2000_noisy = dict()
         los_vectors_j2000_noisy = dict()
 
-        sampler_seed = {
+        random_seed = {
             "GRACE C": 90,
             "GRACE D": 91,
         }
-        eps = np.finfo(np.float64).eps
 
 
         for satellite in ["GRACE C", "GRACE D"]:
@@ -407,23 +403,15 @@ class NoiseGenerator:
                 @ rot_matrices_sf_to_losf_noisy[satellite]
             )
 
-            # Smallest exponent m such that 2**m >= num_epochs
-            exponent_num_samples = int(np.ceil(np.log2(num_epochs)))
-            
             guessed_antenna_phase_center_offset_vector_sf_errors = np.empty((num_epochs, 3))
             guessed_antenna_phase_center_offset_vector_sf = np.empty((num_epochs, 3))
 
-            # Generate Sobol samples
-            sampler = qmc.Sobol(d=3, scramble=True, rng=sampler_seed[satellite])
-            sobol_samples = sampler.random_base2(m=exponent_num_samples)
-            sobol_samples = np.clip(sobol_samples, eps, 1.0 - eps)
-
-            # Transform to normal distribution
-            normal_distribution_samples = norm.ppf(sobol_samples)
-
-            # Scale by standard deviation
-            guessed_antenna_phase_center_offset_vector_sf_errors = normal_distribution_samples[:num_epochs, 0:3] * \
-                standard_deviation_guessed_antenna_phase_center_offset_vector_sf[satellite]
+            rng = np.random.default_rng(random_seed[satellite])
+            guessed_antenna_phase_center_offset_vector_sf_errors = rng.normal(
+                0.0,
+                standard_deviation_guessed_antenna_phase_center_offset_vector_sf[satellite],
+                size=(num_epochs, 3),
+            )
             
             guessed_antenna_phase_center_offset_vector_sf = (
                 antenna_phase_center_offset_vector_sf[satellite]

@@ -258,10 +258,10 @@ class Plotter:
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
         if additional_plane_padding:
-            padding = 0.15 * max_range
+            padding = 0.05 * max_range
             ax.set_xlim(mid_x - max_range - padding, mid_x + max_range + padding)
             ax.set_ylim(mid_y - max_range - padding, mid_y + max_range + padding)
-            ax.set_zlim(mid_z - max_range - padding, mid_z + max_range + padding)
+            ax.set_zlim(mid_z - max_range - 0.20*max_range, mid_z + max_range + padding)
         ax.set_box_aspect([1, 1, 1])
 
     @staticmethod
@@ -395,10 +395,10 @@ class Plotter:
         ax = fig.add_subplot(111, projection="3d")
 
         # Crop the data for better visualization of the relative trajectory shape
-        cross_track_distance = cross_track_distance[:86400*2]
-        radial_distance = radial_distance[:86400*2]
-        along_track_distance = along_track_distance[:86400*2]
-        propagation_time_hours = ((time_data - time_data[0]) / 3600.0)[:86400*2]
+        cross_track_distance = cross_track_distance[:60000]
+        radial_distance = radial_distance[:60000]
+        along_track_distance = along_track_distance[:60000]
+        propagation_time_hours = ((time_data - time_data[0]) / 3600.0)[:60000]
 
 
         ax.xaxis.set_major_formatter(FormatStrFormatter('%.1e'))
@@ -519,16 +519,19 @@ class Plotter:
         ax = fig.add_subplot(111)
         component_labels = ("R", "T", "N")
         component_colors = ("tab:blue", "tab:orange", "tab:green")
+        component_linestyles = ("--", "-", ":")
+        linewidths = (5, 3, 2)
 
-        for component_idx, (component_label, component_color) in enumerate(
-            zip(component_labels, component_colors)
+        for component_idx, (component_label, component_color, component_linestyle, linewidth) in enumerate(
+            zip(component_labels, component_colors, component_linestyles, linewidths)
         ):
             ax.plot(
                 time_hours,
                 thrust_acceleration_rtn[:, component_idx],
                 color=component_color,
-                linewidth=2.2,
+                linewidth=linewidth,
                 label=component_label,
+                linestyle=component_linestyle,
             )
 
         ax.set_title(second_figure_title)
@@ -560,7 +563,7 @@ class Plotter:
             ax = fig.add_subplot(1, 3, i)
 
             # Scatter of samples projected into the plane
-            ax.scatter(samples_rtn[:, a], samples_rtn[:, b], s=6, alpha=0.9, color="tab:blue")
+            ax.scatter(samples_rtn[:, a], samples_rtn[:, b], s=1, alpha=0.9, color="tab:blue")
 
             for ksig in (1, 2, 3):
 
@@ -1208,9 +1211,8 @@ class Plotter:
         elapsed_time_days = (time_data - time_data[0]) / 86400.0
 
         fig, ax = plt.subplots(figsize=(12, 3), dpi=200)
-        ax.plot(elapsed_time_days, grace_c_eccentricity_history, label="GRACE C", linewidth=1.6)
-        ax.plot(elapsed_time_days, grace_d_eccentricity_history, label="GRACE D", linewidth=1.6, linestyle="--")
-        ax.set_title("GRACE-FO eccentricity time evolution")
+        ax.plot(elapsed_time_days[-86400:], grace_c_eccentricity_history[-86400:], label="GRACE C", linewidth=1.6)
+        ax.plot(elapsed_time_days[-86400:], grace_d_eccentricity_history[-86400:], label="GRACE D", linewidth=1.6, linestyle="--")
         ax.set_xlabel("Time since simulation start [days]")
         ax.set_ylabel("Eccentricity [-]")
         ax.grid(True)

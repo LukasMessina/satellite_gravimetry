@@ -398,10 +398,10 @@ plotter = Plotter(output_path=Path("./GRACE-FO/plots"))
 
 acceleration_validation_results = {}
 scenarios = [
-    "GRACE C — Point-Mass Earth Gravity Model",
-    "GRACE D — Point-Mass Earth Gravity Model",
-    "GRACE C — Earth Gravity Model (J0 + J2)",
-    "GRACE D — Earth Gravity Model (J0 + J2)",
+    "GRACE C— Point-Mass Earth Gravity Model",
+    "GRACE D— Point-Mass Earth Gravity Model",
+    "GRACE C— Earth Gravity Model (J0 + J2)",
+    "GRACE D— Earth Gravity Model (J0 + J2)",
 ]
 
 for idx, satellite in enumerate(["GRACE C_keplerian", "GRACE D_keplerian", "GRACE C_j0j2", "GRACE D_j0j2"]):

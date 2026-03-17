@@ -83,3 +83,18 @@ def transform_vector_history_inertial_to_rtn(
     normal_component = np.einsum("ij,ij->i", vector_history, normal_unit_vector)
 
     return np.column_stack((radial_component, along_track_component, normal_component))
+
+
+def get_noise_model_version():
+    while True:
+        try:
+            user_input = int(input(
+                "\nSelect Noise Model Version:\n"
+                "Enter choice (1 or 2): "
+            ))
+            if user_input in [1, 2]:
+                return user_input
+            else:
+                print("Invalid input. Please enter 1 or 2.")
+        except ValueError:
+            print("Invalid input. Please enter an integer (1 or 2).")
