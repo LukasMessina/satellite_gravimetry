@@ -41,8 +41,8 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 1, 1, 6, 0, 0).to_epoch() 
-time_step = 100.0  # seconds
+simulation_end_epoch = DateTime(2019, 3, 1, 1, 0, 0).to_epoch() 
+time_step = 5.0  # seconds
 number_epochs = int(np.floor((simulation_end_epoch - simulation_start_epoch) / time_step)) + 1
 
 # =====================================
@@ -455,9 +455,6 @@ bodies_to_propagate = ["GRACE C", "GRACE D"]
 central_bodies = ["Earth", "Earth"]
 
 # Define relativistic correction settings for the Earth
-# TODO: Activate Lense-Thirring acceleration.
-# Add Angular momentum vector per unit mass (in global frame)
-# that is to be used for the calculation of the Lense-Thirring acceleration.
 # Select terms to be used
 use_schwarzschild = True
 use_lense_thirring = True
@@ -473,9 +470,9 @@ guidance_model = Guidance(
     reference_satellite="GRACE D",
     target_range=target_range,
     n_revolutions=1,      
-    distance_threshold=10.0e3,  
+    distance_threshold=7.5e3,  
     initial_time=simulation_start_epoch,           
-    burn_duration=100,                   
+    burn_duration=200,                   
 )
 
 
@@ -640,34 +637,28 @@ grace_fo_velocity_data = [
 ]
 
 
-# # Eccentricity history of GRACE C
-# grace_c_eccentricity_history = dependent_variables_array[:, 36]  
-# # Eccentricity history of GRACE D
-# grace_d_eccentricity_history = dependent_variables_array[:, 42]  
+plotter.plot_keplerian_elements_difference_time_evolution(
+    time_data,
+    dependent_variables_array
+)
 
-# plotter.plot_eccentricity_time_evolution(
-#     time_data,
-#     grace_c_eccentricity_history,
-#     grace_d_eccentricity_history
-# )
+plotter.plot_orbits(
+    no_satellites=2,
+    position_data=grace_fo_position_data,
+    title="GRACE C and GRACE D orbits",
+    sat_labels=["GRACE C", "GRACE D"],
+    file_name="grace_fo_nominal_orbits.png"
+)
 
-# plotter.plot_orbits(
-#     no_satellites=2,
-#     position_data=grace_fo_position_data,
-#     title="GRACE C and GRACE D orbits",
-#     sat_labels=["GRACE C", "GRACE D"],
-#     file_name="grace_fo_nominal_orbits.png"
-# )
-
-# plotter.plot_relative_position(
-#    time_data=time_data,
-#    position_data=grace_fo_position_data,
-#    velocity_data=grace_fo_velocity_data,
-#    first_figure_title="RTN relative position components time evolution - GRACE-FO",
-#    first_file_name="grace_fo_rtn_relative_position_components.png",
-#    second_figure_title="RTN Relative position time evolution - GRACE-FO",
-#    second_file_name="grace_fo_3d_rtn_relative_position.png",
-# )
+plotter.plot_relative_position(
+   time_data=time_data,
+   position_data=grace_fo_position_data,
+   velocity_data=grace_fo_velocity_data,
+   first_figure_title="RTN relative position components time evolution - GRACE-FO",
+   first_file_name="grace_fo_rtn_relative_position_components.png",
+   second_figure_title="RTN Relative position time evolution - GRACE-FO",
+   second_file_name="grace_fo_3d_rtn_relative_position.png",
+)
 
 plotter.plot_srp_acceleration_time_series(
     dependent_variables_array=dependent_variables_array,
@@ -677,102 +668,93 @@ plotter.plot_aerodynamic_acceleration_time_series(
     dependent_variables_array=dependent_variables_array,
 )
 
-# plotter.plot_custom_acceleration_time_series(
-#     dependent_variables_array=dependent_variables_array,
-#     states_array=states_array,
-# )
+plotter.plot_custom_acceleration_time_series(
+    dependent_variables_array=dependent_variables_array,
+    states_array=states_array,
+)
 
-# plotter.plot_attitude_triads_orientation(
-#     dependent_variables_array=dependent_variables_array,
-#     grace_fo_position_data=grace_fo_position_data,
-#     epoch_idx=100,
-#     file_name="grace_attitude_triads_epoch_100.png"
-# )
+plotter.plot_attitude_triads_orientation(
+    dependent_variables_array=dependent_variables_array,
+    grace_fo_position_data=grace_fo_position_data,
+    epoch_idx=100,
+    file_name="grace_attitude_triads_epoch_100.png"
+)
 
 
 # =====================================
 # GPS POSITION MEASUREMENT SIMULATION 
 # =====================================
 
-# NOTE: The GPS noise model is defined through a one-sided ASD
-# equal to S(f) = S = 1 cm/(Hz^1/2). When converting a continuous
-# white-noise PSD to a discrete-time sequence sampled every time_step,
-# the variance must account for the effective bandwidth introduced by
-# sampling. For a one-sided PSD this bandwidth is fs/2, with fs = 1/time_step.
-# Therefore:
-#
-#     sigma^2 = S^2 * fs / 2 = S^2 / (2*time_step)
-#
+if noise_model_version == 1:
+    sigma_gps_position_rtn = np.array([0.01, 0.01, 0.01])*np.sqrt(1/(2*time_step))  # [R, T, N] in meters
+    relative_position_error_asd_json_path=None
+else:
+    sigma_gps_position_rtn = None
+    relative_position_error_asd_json_path=Path("data/relative_position_error_asd_data.json")
 
-sigma_gps_position_rtn = np.array([0.01, 0.01, 0.01])*np.sqrt(1/(2*time_step))  # [R, T, N] in meters
-
-
+    
 eci_gps_position_noise_grace_c, rtn_gps_position_noise_grace_c = NoiseGenerator.generate_gps_position_noise(
+    plotter=plotter,
+    num_epochs=number_epochs,
     state_vector=states_array[:, 1:7],  # GRACE C state
     sigma_rtn=sigma_gps_position_rtn,
-    seed=40
+    seed=80,
+    satellite_name="grace_c",
+    relative_position_error_asd_json_path=relative_position_error_asd_json_path,
+    noise_model_version=noise_model_version,
 )
 
 eci_gps_position_noise_grace_d, rtn_gps_position_noise_grace_d = NoiseGenerator.generate_gps_position_noise(
+    plotter=plotter,
+    num_epochs=number_epochs,
     state_vector=states_array[:, 7:13],  # GRACE D state
     sigma_rtn=sigma_gps_position_rtn,
-    seed=41
+    seed=90,
+    satellite_name="grace_d",
+    relative_position_error_asd_json_path=relative_position_error_asd_json_path,
+    noise_model_version=noise_model_version,
 )
-
+    
 eci_gps_position_noise = {
     "GRACE C": eci_gps_position_noise_grace_c,
     "GRACE D": eci_gps_position_noise_grace_d,
 }
 
-Plotter.plot_rtn_error_projections(
-    plotter,
-    samples_rtn=rtn_gps_position_noise_grace_c,  
-    sigma_rtn=sigma_gps_position_rtn,
-    file_name="grace_c_gps_noise_rtn_projections.png"
-)
-
-Plotter.plot_rtn_error_projections(
-    plotter,
-    samples_rtn=rtn_gps_position_noise_grace_d,  
-    sigma_rtn=sigma_gps_position_rtn,
-    file_name="grace_d_gps_noise_rtn_projections.png"
-)
 
 # =====================================
 # KBR RANGE MEASUREMENT SIMULATION 
 # =====================================
 
-# # Generate KBR system and oscillator noise time series for each satellite
-# kbr_system_and_oscillator_noise_timeseries = NoiseGenerator.generate_kbr_system_and_oscillator_noise(
-#    plotter,
-#    number_epochs,
-#    seed=42,
-#    noise_model_version=noise_model_version,
-# )
+# Generate KBR system and oscillator noise time series for each satellite
+kbr_system_and_oscillator_noise_timeseries = NoiseGenerator.generate_kbr_system_and_oscillator_noise(
+   plotter,
+   number_epochs,
+   seed=42,
+   noise_model_version=noise_model_version,
+)
 
-# antenna_phase_center_offset_vector_sf = {       
-#       "GRACE C": np.array([1.4437, -370.6e-6, 145e-6]),  # [m]
-#       "GRACE D": np.array([1.4817, 183e-6, 1393.1e-6]),  # [m]
-# }
-
-
-# standard_deviation_guessed_antenna_phase_center_offset_vector_sf = {
-#     "GRACE C": np.array([1.2e-3, 64.7e-6, 65.4e-6]),
-#     "GRACE D": np.array([1.3e-3, 65.9e-6, 71.6e-6])
-# }  
+antenna_phase_center_offset_vector_sf = {       
+      "GRACE C": np.array([1.4437, -370.6e-6, 145e-6]),  # [m]
+      "GRACE D": np.array([1.4817, 183e-6, 1393.1e-6]),  # [m]
+}
 
 
-# bias_value = 2e-2  # KBR range bias in meters
+standard_deviation_guessed_antenna_phase_center_offset_vector_sf = {
+    "GRACE C": np.array([1.2e-3, 64.7e-6, 65.4e-6]),
+    "GRACE D": np.array([1.3e-3, 65.9e-6, 71.6e-6])
+}  
 
-# kbr_range_noise = NoiseGenerator.generate_kbr_range_noise(
-#     error_free_pointing_angles_time_series=error_free_pointing_angles_time_series,
-#     noisy_attitude_time_series=noisy_attitude_time_series,
-#     kbr_system_and_oscillator_noise_timeseries=kbr_system_and_oscillator_noise_timeseries,
-#     position_data=grace_fo_position_data,
-#     eci_gps_position_noise=eci_gps_position_noise,
-#     antenna_phase_center_offset_vector_sf=antenna_phase_center_offset_vector_sf,
-#     standard_deviation_guessed_antenna_phase_center_offset_vector_sf=standard_deviation_guessed_antenna_phase_center_offset_vector_sf,
-#     bias_value=bias_value,
-#     plotter=plotter,
-#     )
 
+bias_value = 2e-2  # KBR range bias in meters
+
+kbr_range_noise = NoiseGenerator.generate_kbr_range_noise(
+    error_free_pointing_angles_time_series=error_free_pointing_angles_time_series,
+    noisy_attitude_time_series=noisy_attitude_time_series,
+    kbr_system_and_oscillator_noise_timeseries=kbr_system_and_oscillator_noise_timeseries,
+    position_data=grace_fo_position_data,
+    eci_gps_position_noise=eci_gps_position_noise,
+    antenna_phase_center_offset_vector_sf=antenna_phase_center_offset_vector_sf,
+    standard_deviation_guessed_antenna_phase_center_offset_vector_sf=standard_deviation_guessed_antenna_phase_center_offset_vector_sf,
+    bias_value=bias_value,
+    plotter=plotter,
+    )

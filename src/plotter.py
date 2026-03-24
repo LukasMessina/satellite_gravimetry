@@ -350,7 +350,6 @@ class Plotter:
             alpha=1.0
         )
 
-
     def plot_relative_position(self, time_data, position_data, velocity_data, first_figure_title, first_file_name, second_figure_title, second_file_name):
         """
         Plot the relative position components in the RTN frame between the satellites pair over time and
@@ -589,7 +588,6 @@ class Plotter:
         plt.tight_layout()
         plt.savefig(self.output_path / file_name)
 
-
     def plot_acceleration_finite_difference_statistics(
         self,
         scenario: str,
@@ -744,7 +742,6 @@ class Plotter:
         fig.savefig(out, bbox_inches="tight")
         plt.close(fig)
 
-
     def plot_los_intersatellite_acceleration_finite_difference_statistics(
         self,
         scenario: str,
@@ -861,13 +858,55 @@ class Plotter:
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
+    def plot_relative_position_error_asd(
+        self,
+        file_name: str,
+        relative_position_error_asd_json_path: Path,
+    ) -> None:
+        """
+        Plot the amplitude spectral density (ASD) of the relative position error.
+
+        The spectrum is based on Figure 6.3 from:
+
+        Teixeira da Encarnação, J. G. (2015).
+        "Next-generation satellite gravimetry for measuring mass transport in the Earth system."
+        PhD dissertation, Delft University of Technology.
+
+        The data have been reconstructed from the original figure using a plot-digitizer
+        (JSON export), and therefore represent an approximate numerical reproduction
+        of the published results.
+        """
+
+        fig = plt.figure(figsize=(7, 6))
+        ax = fig.add_subplot(111)
+
+        with open(relative_position_error_asd_json_path, "r") as f:
+            data = json.load(f)
+
+            x = np.array([float(d["x"]) for d in data], dtype=float)
+            y = np.array([float(d["y"]) for d in data], dtype=float)
+            # Convert the digitized frequencies from Hz to mHz for display.
+            idx = np.argsort(x)
+            x_mhz = x[idx] * 1e3
+            ax.loglog(x_mhz, y[idx], linewidth=2, color="#073AA0", label="Kinematic Orbit")
+
+        ax.set_title("Relative Position Error ASD (plot digitizer)")
+        ax.set_xlabel("Frequency [mHz]")
+        ax.set_ylabel(r"ASD [m Hz$^{-1/2}$]")
+        ax.set_ylim(1e-3, 1e0)
+        ax.legend(loc="upper right", frameon=True)
+
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
     def plot_linear_interpolation_comparison(
         self,
         original_frequencies: np.ndarray,
         original_asd_values: np.ndarray,
         interpolated_frequencies: np.ndarray,
         interpolated_asd_values: np.ndarray,
-        file_name: str
+        file_name: str,
+        ordinate_label = r"ASD [rad Hz$^{-1/2}$]",
     ) -> None:
         """Plot comparison between original and linearly interpolated ASD data."""
 
@@ -878,7 +917,7 @@ class Plotter:
 
         plt.title("ASD Data: Original vs Interpolated")
         plt.xlabel("Frequency [Hz]")
-        plt.ylabel(r"ASD [rad Hz$^{-1/2}$]")
+        plt.ylabel(ordinate_label)
         plt.legend(loc="upper right", frameon=True)
 
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
@@ -902,6 +941,51 @@ class Plotter:
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
+    def plot_absolute_position_error_time_series(
+        self,
+        noise_time_series: list | np.ndarray,
+        file_name: str
+    ) -> None:
+        """Plot time series of absolute position noise."""
+
+        if (
+            isinstance(noise_time_series, list)
+            and len(noise_time_series) > 0
+        ):
+            component_labels = ("X", "Y", "Z")
+            fig, axes = plt.subplots(1, len(noise_time_series), figsize=(18, 5), dpi=300, sharex=True)
+            axes = np.atleast_1d(axes)
+
+            for component_idx, (ax, component_time_series) in enumerate(zip(axes, noise_time_series)):
+                component_label = (
+                    component_labels[component_idx]
+                )
+                ax.plot(
+                    component_time_series.sample_times,
+                    component_time_series,
+                    color="#073AA0",
+                    linewidth=1.8,
+                )
+                ax.set_title(f"{component_label} Component")
+                ax.set_xlabel("Time [s]")
+                if component_idx == 0:
+                    ax.set_ylabel("Position Error [m]")
+                ax.grid(True)
+
+            fig.suptitle("Absolute Inertial Position Noise Time Series", y=0.97)
+            fig.tight_layout()
+            fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+            plt.close(fig)
+            return
+
+        fig = plt.figure(figsize=(10, 6))
+        plt.plot(noise_time_series.sample_times, noise_time_series, color="#073AA0", linewidth=1.8)
+        plt.title("Absolute Inertial Position Noise Time Series")
+        plt.xlabel("Time [s]")
+        plt.ylabel("Position Error [m]")
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
     def plot_welch_estimated_psd_comparison(
         self,
         estimated_frequencies: np.ndarray,
@@ -916,11 +1000,73 @@ class Plotter:
     ) -> None:
         """Plot comparison between Welch estimated PSD and input PSD."""
 
+        if isinstance(estimated_frequencies, np.ndarray):
+            if estimated_frequencies.ndim == 1:
+                estimated_frequencies = [estimated_frequencies]
+        if isinstance(estimated_frequencies, list):
+                estimated_frequencies =  [np.asarray(component_frequencies, dtype=float) for component_frequencies in estimated_frequencies]
+        if isinstance(estimated_psd_values, np.ndarray):
+            if estimated_psd_values.ndim == 1:
+                estimated_psd_values = [estimated_psd_values]
+        if isinstance(estimated_psd_values, list):
+                estimated_psd_values =  [np.asarray(component_psd_values, dtype=float) for component_psd_values in estimated_psd_values]
+
+        if len(estimated_frequencies) != len(estimated_psd_values):
+            raise ValueError("Estimated frequency and PSD inputs must contain the same number of components.")
+
+        if len(estimated_frequencies) > 1:
+            component_labels = ("X", "Y", "Z")
+            fig, axes = plt.subplots(1, len(estimated_frequencies), figsize=(18, 5), dpi=300, sharey=True)
+            axes = np.atleast_1d(axes)
+
+            for component_idx, ax in enumerate(axes):
+                component_label = component_labels[component_idx]
+                ax.loglog(
+                    estimated_frequencies[component_idx],
+                    estimated_psd_values[component_idx],
+                    color="#D8660E",
+                    label="Welch Estimated PSD",
+                    linewidth=1.8,
+                )
+                ax.loglog(
+                    input_frequencies,
+                    input_psd_values,
+                    color="#073AA0",
+                    label="Input PSD",
+                    linewidth=1.5,
+                    linestyle="--",
+                )
+                ax.set_title(f"{component_label} Component")
+                ax.set_xlabel("Frequency [Hz]")
+                if component_idx == 0:
+                    ax.set_ylabel(ordinate_label)
+                ax.legend(loc="upper right", frameon=True)
+
+                if x_limit_inf is not None and x_limit_sup is not None:
+                    ax.set_xlim(x_limit_inf, x_limit_sup)
+
+            fig.suptitle(title)
+            fig.tight_layout()
+            fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+            plt.close(fig)
+            return
+
         fig = plt.figure(figsize=(10, 6))
-
-        plt.loglog(estimated_frequencies, estimated_psd_values, color="#D8660E", label='Welch Estimated PSD', linewidth=1.8)
-        plt.loglog(input_frequencies,  input_psd_values, color="#073AA0", label='Input PSD', linewidth=1.8, linestyle='--')
-
+        plt.loglog(
+            estimated_frequencies[0],
+            estimated_psd_values[0],
+            color="#D8660E",
+            label='Welch Estimated PSD',
+            linewidth=1.8,
+        )
+        plt.loglog(
+            input_frequencies,
+            input_psd_values,
+            color="#073AA0",
+            label='Input PSD',
+            linewidth=1.5,
+            linestyle='--',
+        )
         plt.title(title)
         plt.xlabel("Frequency [Hz]")
         plt.ylabel(ordinate_label)
@@ -930,9 +1076,7 @@ class Plotter:
             plt.xlim(x_limit_inf, x_limit_sup)
 
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
-
         plt.close(fig)
-
 
     def plot_kbr_system_and_oscillator_asd(
         self,
@@ -973,7 +1117,6 @@ class Plotter:
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
-    
     def plot_apc_pointing_jitter_coupling_time_series_demeaned(
         self,
         apc_pointing_jitter_coupling_noise: dict[str, np.ndarray],
@@ -1015,7 +1158,6 @@ class Plotter:
 
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
-
 
     def plot_residual_apc_coupling_jitter_noise_time_series(
         self,
@@ -1120,7 +1262,6 @@ class Plotter:
             fig.savefig(self.output_path / component_file_name, bbox_inches="tight")
             plt.close(fig)
 
-
     def plot_aerodynamic_acceleration_time_series(
         self,
         dependent_variables_array: np.ndarray,
@@ -1193,30 +1334,67 @@ class Plotter:
             fig.savefig(self.output_path / component_file_name, bbox_inches="tight")
             plt.close(fig)
 
-    def plot_eccentricity_time_evolution(
+    def plot_keplerian_elements_difference_time_evolution(
             self,
             time_data: np.ndarray,
-            grace_c_eccentricity_history: np.ndarray,
-            grace_d_eccentricity_history: np.ndarray,
+            dependent_variables_array: np.ndarray,
     )-> None:
-        """Plot the eccentricity time evolution for GRACE C and GRACE D."""
+        """Plot GRACE-FO Keplerian element differences time history."""
+
+        time_data = np.asarray(time_data, dtype=float)
+        dependent_variables_array = np.asarray(dependent_variables_array, dtype=float)
 
         if time_data.ndim != 1:
             raise ValueError("time_data must be a 1D array.")
-        if grace_c_eccentricity_history.shape != time_data.shape:
-            raise ValueError("grace_c_eccentricity_history must have the same shape as time_data.")
-        if grace_d_eccentricity_history.shape != time_data.shape:
-            raise ValueError("grace_d_eccentricity_history must have the same shape as time_data.")
+        if dependent_variables_array.ndim != 2:
+            raise ValueError("dependent_variables_array must be a 2D array.")
 
         elapsed_time_days = (time_data - time_data[0]) / 86400.0
 
-        fig, ax = plt.subplots(figsize=(12, 3), dpi=200)
-        ax.plot(elapsed_time_days[-86400:], grace_c_eccentricity_history[-86400:], label="GRACE C", linewidth=1.6)
-        ax.plot(elapsed_time_days[-86400:], grace_d_eccentricity_history[-86400:], label="GRACE D", linewidth=1.6, linestyle="--")
-        ax.set_xlabel("Time since simulation start [days]")
-        ax.set_ylabel("Eccentricity [-]")
-        ax.grid(True)
-        ax.legend(loc="best")
-        fig.tight_layout()
-        fig.savefig(self.output_path/ "grace_fo_eccentricity_evolution.png", dpi=300, bbox_inches="tight")
+        grace_c_keplerian_history = dependent_variables_array[:, 35:41]
+        grace_d_keplerian_history = dependent_variables_array[:, 41:47]
+
+        keplerian_difference = grace_c_keplerian_history - grace_d_keplerian_history
+
+        # Wrap angular element differences to [-pi, pi] before converting to degrees.
+        keplerian_difference[:, 2:] = np.arctan2(
+            np.sin(keplerian_difference[:, 2:]),
+            np.cos(keplerian_difference[:, 2:]),
+        )
+
+        subplot_metadata = [
+            ("Semi-major axis", keplerian_difference[:, 0], r"$\Delta a$ [m]"),
+            ("Eccentricity", keplerian_difference[:, 1], r"$\Delta e$ [-]"),
+            ("Inclination", np.degrees(keplerian_difference[:, 2]), r"$\Delta i$ [deg]"),
+            ("Argument of periapsis", np.degrees(keplerian_difference[:, 3]), r"$\Delta \omega$ [deg]"),
+            ("RAAN", np.degrees(keplerian_difference[:, 4]), r"$\Delta \Omega$ [deg]"),
+            ("True anomaly", np.degrees(keplerian_difference[:, 5]), r"$\Delta \nu$ [deg]"),
+        ]
+
+        fig, axes = plt.subplots(2, 3, figsize=(15, 8), dpi=300, sharex=True)
+        line_color = "#0742A0"
+
+        for axis, (title, values, ylabel) in zip(axes.flat, subplot_metadata):
+            axis.plot(elapsed_time_days, values, color=line_color, linewidth=1.8)
+            axis.axhline(0.0, color="black", linewidth=0.9, linestyle="--", alpha=0.7)
+            axis.set_title(title)
+            axis.set_ylabel(ylabel)
+            axis.grid(True)
+
+            max_abs_value = np.nanmax(np.abs(values))
+            if max_abs_value > 0.0 and (max_abs_value < 1e-2 or max_abs_value >= 1e3):
+                formatter = ScalarFormatter(useMathText=True)
+                formatter.set_scientific(True)
+                formatter.set_powerlimits((0, 0))
+                axis.yaxis.set_major_formatter(formatter)
+
+        for axis in axes[-1, :]:
+            axis.set_xlabel("Propagation time [days]")
+
+        fig.suptitle("Keplerian element differences between GRACE C and GRACE D")
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+        fig.savefig(
+            self.output_path / "grace_fo_keplerian_elements_difference_time_evolution.png",
+            bbox_inches="tight",
+        )
         plt.close(fig)

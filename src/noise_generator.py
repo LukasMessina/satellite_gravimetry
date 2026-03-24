@@ -1,7 +1,7 @@
 """ Noise Generator Module """
 
 from typing import List
-from helpers import rtn_basis
+from helpers import rtn_basis, transform_vector_history_inertial_to_rtn
 from pathlib import Path
 from plotter import Plotter
 
@@ -15,27 +15,179 @@ class NoiseGenerator:
     """Class to generate different types of noise for satellite measurements. """
 
     @staticmethod
-    def generate_gps_position_noise(state_vector: np.ndarray, sigma_rtn: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray]:
-        """ Generate GPS position measurement noise in RTN frame using Gaussian draws."""
+    def generate_gps_position_noise(
+        plotter: Plotter,
+        num_epochs: int,
+        state_vector: np.ndarray,
+        seed: int,
+        noise_model_version: int,
+        satellite_name: str,
+        sigma_rtn: np.ndarray | None = None,
+        relative_position_error_asd_json_path: Path | None = None,
+        ) -> tuple[np.ndarray, np.ndarray]:
+        """ Generate GPS position measurement noise in ECI and/or RTN frame."""
 
-        num_epochs = state_vector.shape[0]
-        
-        eci_position_errors = np.empty((num_epochs, 3))
-        rtn_position_errors = np.empty((num_epochs, 3))
+        if noise_model_version == 1:
 
-        rng = np.random.default_rng(seed)
-        position_errors_rtn = rng.normal(0.0, sigma_rtn, size=(num_epochs, 3))
+            eci_position_errors = np.empty((num_epochs, 3))
+            rtn_position_errors = np.empty((num_epochs, 3))
 
-        for k in range(num_epochs):
-            r = state_vector[k, 0:3]
-            v = state_vector[k, 3:6]
-            C_rtn_eci = rtn_basis(r, v)
+            # NOTE: The GPS noise model is defined through a one-sided ASD
+            # equal to S(f) = S = 1 cm/(Hz^1/2). When converting a continuous
+            # white-noise PSD to a discrete-time sequence sampled every time_step,
+            # the variance must account for the effective bandwidth introduced by
+            # sampling. For a one-sided PSD this bandwidth is fs/2, with fs = 1/time_step.
+            # Therefore:
+            #
+            #     sigma^2 = S^2 * fs / 2 = S^2 / (2*time_step)
+            #
 
-            # Transform errors from RTN to ECI frame
-            position_errors_eci = position_errors_rtn[k, :] @ C_rtn_eci.T
+            rng = np.random.default_rng(seed)
+            position_errors_rtn = rng.normal(0.0, sigma_rtn, size=(num_epochs, 3))
 
-            eci_position_errors[k, :] = position_errors_eci
-            rtn_position_errors[k, :] = position_errors_rtn[k, :]
+            for k in range(num_epochs):
+                r = state_vector[k, 0:3]
+                v = state_vector[k, 3:6]
+                C_rtn_eci = rtn_basis(r, v)
+
+                # Transform errors from RTN to ECI frame
+                position_errors_eci = position_errors_rtn[k, :] @ C_rtn_eci.T
+
+                eci_position_errors[k, :] = position_errors_eci
+                rtn_position_errors[k, :] = position_errors_rtn[k, :]
+
+            Plotter.plot_rtn_error_projections(
+                plotter,
+                samples_rtn=rtn_position_errors,
+                sigma_rtn=sigma_rtn,
+                file_name=f"{satellite_name}_gps_noise_rtn_projections.png"
+            )
+
+        else:
+            # TODO: Add downsampling of the noise time series to 5 seconds
+
+            Plotter.plot_relative_position_error_asd(
+                plotter,
+                file_name="relative_position_error_asd.png",
+                relative_position_error_asd_json_path=relative_position_error_asd_json_path,
+                )
+            
+            with open(relative_position_error_asd_json_path, 'r') as file:
+                asd_data = json.load(file)
+
+            frequencies = np.array([float(entry['x']) for entry in asd_data])
+            
+            # NOTE: The conversion from the relative position error ASD to the
+            # absolute position error ASD is valid only under the following assumptions.
+            # 1. KBR measurement noise is negligible in the frequency band of interest,
+            # so the spectrum is attributed entirely to KO-derived relative orbit error.
+            # 2. First-order linearization is valid, i.e. the relative error is small compared
+            # to the inter-satellite distance.
+            # 3. Both satellites contribute equally to the relative error (identical statistics).
+            # 4. The absolute position errors of the two satellites are uncorrelated.
+            # 5. The absolute position error of each satellite is isotropic and uncorrelated
+            # across Cartesian components.
+            # Under these assumptions, the absolute position error ASD of a single satellite
+            # is obtained by scaling the relative ASD by a factor 1/sqrt(2).  
+            asd_values = np.array([float(entry['y']) for entry in asd_data]) / np.sqrt(2.0)
+
+            # Create a dictionary for the interpolator
+            data_to_interpolate = dict(zip(frequencies, asd_values))
+
+            # Set the interpolator settings (linear interpolation)
+            interpolator_settings = math.interpolators.linear_interpolation()
+            interpolator = math.interpolators.create_one_dimensional_scalar_interpolator(data_to_interpolate, interpolator_settings)
+
+            # Define the coarser time grid and relative number of samples
+            measurement_time_step = 5.0  # seconds
+            noise_time_step = 51.0  # seconds
+            total_duration = (num_epochs - 1) * measurement_time_step
+            num_noise_samples = int(np.floor(total_duration / noise_time_step)) + 1    
+
+            # Initialize position error vectors time histories
+            eci_position_errors = np.empty((num_noise_samples, 3))
+            rtn_position_errors = np.empty((num_noise_samples, 3))
+
+            # Create a regular frequency span and interpolate ASD values
+            delta_f = 1.0 / (num_noise_samples * noise_time_step)
+            frequencies_uniform_span = np.arange(frequencies.min(), frequencies.max(), delta_f)
+            asd_interpolated = np.array([interpolator.interpolate(freq) for freq in frequencies_uniform_span])
+
+            # Convert ASD to PSD
+            psd_interpolated = types.frequencyseries.FrequencySeries(asd_interpolated**2, delta_f)
+
+            # Build a full inertial position-error history.
+            eci_noise_time_series = []
+            for component_idx in range(3):
+                eci_noise_time_series.append(
+                    noise.gaussian.noise_from_psd(
+                        num_noise_samples,
+                        noise_time_step,
+                        psd_interpolated,
+                        seed + component_idx,
+                    )
+                )
+
+            eci_position_errors[:, :] = np.column_stack(
+                [
+                    np.asarray(component_time_series.numpy(), dtype=float)
+                    for component_time_series in eci_noise_time_series
+                ]
+            )
+
+            rtn_position_errors[:, :] = transform_vector_history_inertial_to_rtn(
+                eci_position_errors,
+                state_vector[:, 0:3],
+                state_vector[:, 3:6],
+            )
+
+
+            # Estimate PSD of time series via Welch
+            segment_len = int(num_noise_samples / 31)
+
+            # 50% overlap
+            seg_stride = segment_len // 2
+
+            estimated_frequencies = []
+            estimated_psd_values = []
+            for component_time_series in eci_noise_time_series:
+                estimated_psd = psd.welch(
+                    component_time_series,
+                    seg_len=segment_len,
+                    seg_stride=seg_stride,
+                )
+                estimated_frequencies.append(estimated_psd.sample_frequencies.numpy())
+                estimated_psd_values.append(estimated_psd.numpy())
+
+            input_frequencies = psd_interpolated.sample_frequencies.numpy()
+            input_psd_values = psd_interpolated.numpy()    
+            
+            # Plot comparison of original and interpolated data
+            plotter.plot_linear_interpolation_comparison(
+                frequencies,
+                asd_values,
+                frequencies_uniform_span,
+                asd_interpolated,
+                file_name=f"{satellite_name}_absolute_position_error_asd_interpolation_comparison.png",
+                ordinate_label=r"ASD [m Hz$^{-1/2}$]"
+            )
+
+            plotter.plot_absolute_position_error_time_series(
+                eci_noise_time_series,
+                file_name=f"{satellite_name}_absolute_position_error_time_series.png",
+            )
+
+            plotter.plot_welch_estimated_psd_comparison(
+                estimated_frequencies,
+                estimated_psd_values,
+                input_frequencies,
+                input_psd_values,
+                file_name=f"{satellite_name}_absolute_position_error_welch_estimated_psd_comparison.png",
+                ordinate_label=r"PSD [m$^2$ Hz$^{-1}$]",
+                title="Absolute Inertial Position Error PSD",
+                x_limit_inf=1e-5,
+                x_limit_sup=1e-2,
+            )
 
         return eci_position_errors, rtn_position_errors
     
@@ -137,7 +289,7 @@ class NoiseGenerator:
                     file_name=f"{satellite_label}_{file_prefix}_asd_interpolation_comparison.png"
                 )
 
-                # Print noise time series and basic stats
+                # Plot noise time series and basic stats
                 plotter.plot_angle_noise_time_series(
                     noise_time_series,
                     file_name=f"{satellite_label}_{file_prefix}_pointing_angle_noise_time_series.png",

@@ -13,7 +13,7 @@ import numpy as np
 class OrbitPhaseShiftingWindow:
     start_time: float
     end_time: float
-    acceleration_inertial: np.ndarray
+    acceleration_magnitude: float
 
 
 class Guidance:
@@ -117,20 +117,24 @@ class Guidance:
         current_range = float(np.linalg.norm(relative_position_rtn))
         range_error = current_range - self.target_range
 
-        # If we are currently in one of the scheduled quasi-impulsive thrust firings time windows, apply it.
+        # If we are currently in one of the scheduled quasi-impulsive thrust firings time windows,
+        # align the thrust with the instantaneous velocity direction.
         for i, window in enumerate(self.active_thrust_firing_windows):
             if window.start_time <= current_time < window.end_time:
-                self.current_acceleration = window.acceleration_inertial
-                # if len(self.active_thrust_firing_windows) == 2 and i == 0:
-                #     print("Applying thrust firing 1")
-                # else:
-                #     print("Applying thrust firing 2")
-                # return
+                self.current_acceleration = self._get_tangential_acceleration(
+                    controlled_velocity,
+                    window.acceleration_magnitude,
+                )
+                if len(self.active_thrust_firing_windows) == 2 and i == 0:
+                    print("Applying thrust firing 1")
+                else:
+                    print("Applying thrust firing 2")
+                return
 
         # Remove already completed thrust firing windows
         self.active_thrust_firing_windows = [window for window in self.active_thrust_firing_windows if window.end_time > current_time]
 
-        # Do not start a new maneuver before the previous one has completed
+        # Do not start a new maneuver before the previous one has completed and the buffer time has passed
         if current_time - (self.last_exit_burn_end_time + 3600) <= 0.0:
             return
 
@@ -148,7 +152,10 @@ class Guidance:
 
         for window in self.active_thrust_firing_windows:
             if window.start_time <= current_time < window.end_time:
-                self.current_acceleration = window.acceleration_inertial
+                self.current_acceleration = self._get_tangential_acceleration(
+                    controlled_velocity,
+                    window.acceleration_magnitude,
+                )
                 return
             
     # ============================================= 
@@ -213,26 +220,27 @@ class Guidance:
         if abs(first_delta_v) < 1e-9:
             return
 
-        controlled_tangential_direction = controlled_velocity / np.linalg.norm(controlled_velocity)
-        first_inertial_acceleration = (first_delta_v / self.burn_duration) * controlled_tangential_direction
+        first_acceleration_magnitude = first_delta_v / self.burn_duration
 
         phasing_orbit_orbital_period = 2.0 * math.pi * math.sqrt(phasing_orbit_semi_major_axis**3 / self.central_gravitational_parameter)
-        exit_burn_start_time = current_time + self.n_revolutions * phasing_orbit_orbital_period
+        exit_burn_start_time = (
+            current_time
+            + self.n_revolutions * phasing_orbit_orbital_period
+        )
 
         # Equal and opposite exit quasi impulsive firing
-        second_delta_v = -first_delta_v
-        second_inertial_acceleration = (second_delta_v / self.burn_duration) * controlled_tangential_direction
+        second_acceleration_magnitude = -first_acceleration_magnitude
 
         self.active_thrust_firing_windows = [
             OrbitPhaseShiftingWindow(
                 start_time=current_time,
                 end_time=current_time + self.burn_duration,
-                acceleration_inertial=first_inertial_acceleration,
+                acceleration_magnitude=first_acceleration_magnitude,
             ),
             OrbitPhaseShiftingWindow(
                 start_time=exit_burn_start_time,
                 end_time=exit_burn_start_time + self.burn_duration,
-                acceleration_inertial=second_inertial_acceleration,
+                acceleration_magnitude=second_acceleration_magnitude,
             ),
         ]
 
@@ -252,6 +260,16 @@ class Guidance:
         normal_unit_vector = angular_momentum / np.linalg.norm(angular_momentum)
         along_track_unit_vector = np.cross(normal_unit_vector, radial_unit_vector)
         return np.column_stack((radial_unit_vector, along_track_unit_vector, normal_unit_vector))
+
+    @staticmethod
+    def _get_tangential_acceleration(
+        velocity: np.ndarray,
+        acceleration_magnitude: float,
+    ) -> np.ndarray:
+        """
+        Return an inertial acceleration parallel to the instantaneous velocity vector.
+        """
+        return acceleration_magnitude * velocity / np.linalg.norm(velocity)
 
     # =============================================================
     #           Arc-length to true anomaly shift conversion
