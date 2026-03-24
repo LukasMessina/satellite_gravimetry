@@ -241,7 +241,7 @@ class NoiseGenerator:
             error_free_pointing_angles_time_series[file_prefix] = noise_time_series
 
             # Estimate PSD of time series via Welch
-            segment_len = int(num_samples / 3)
+            segment_len = int(num_samples / 31)
 
             # 50% overlap
             seg_stride = segment_len // 2
