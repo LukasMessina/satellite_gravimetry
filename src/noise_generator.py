@@ -64,7 +64,6 @@ class NoiseGenerator:
             )
 
         else:
-            # TODO: Add downsampling of the noise time series to 5 seconds
 
             Plotter.plot_relative_position_error_asd(
                 plotter,
@@ -99,17 +98,15 @@ class NoiseGenerator:
             interpolator = math.interpolators.create_one_dimensional_scalar_interpolator(data_to_interpolate, interpolator_settings)
 
             # Define the coarser time grid and relative number of samples
-            measurement_time_step = 5.0  # seconds
-            noise_time_step = 51.0  # seconds
-            total_duration = (num_epochs - 1) * measurement_time_step
-            num_noise_samples = int(np.floor(total_duration / noise_time_step)) + 1    
+            time_step = 5.0  # seconds
+            num_samples = num_epochs   
 
             # Initialize position error vectors time histories
-            eci_position_errors = np.empty((num_noise_samples, 3))
-            rtn_position_errors = np.empty((num_noise_samples, 3))
+            eci_position_errors = np.empty((num_samples, 3))
+            rtn_position_errors = np.empty((num_samples, 3))
 
             # Create a regular frequency span and interpolate ASD values
-            delta_f = 1.0 / (num_noise_samples * noise_time_step)
+            delta_f = 1.0 / (num_samples * time_step)
             frequencies_uniform_span = np.arange(frequencies.min(), frequencies.max(), delta_f)
             asd_interpolated = np.array([interpolator.interpolate(freq) for freq in frequencies_uniform_span])
 
@@ -121,8 +118,8 @@ class NoiseGenerator:
             for component_idx in range(3):
                 eci_noise_time_series.append(
                     noise.gaussian.noise_from_psd(
-                        num_noise_samples,
-                        noise_time_step,
+                        num_samples,
+                        time_step,
                         psd_interpolated,
                         seed + component_idx,
                     )
@@ -143,7 +140,7 @@ class NoiseGenerator:
 
 
             # Estimate PSD of time series via Welch
-            segment_len = int(num_noise_samples / 31)
+            segment_len = int(num_samples / 8)
 
             # 50% overlap
             seg_stride = segment_len // 2
@@ -244,7 +241,7 @@ class NoiseGenerator:
             error_free_pointing_angles_time_series[file_prefix] = noise_time_series
 
             # Estimate PSD of time series via Welch
-            segment_len = int(num_samples / 31)
+            segment_len = int(num_samples / 3)
 
             # 50% overlap
             seg_stride = segment_len // 2

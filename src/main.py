@@ -11,7 +11,14 @@ warnings.filterwarnings(
 # Load standard modules
 from pathlib import Path
 import numpy as np
-from orbit_simulator import OrbitalElements
+from orbit_simulator import (
+    OrbitalElements,
+    get_final_state_vectors,
+    restructure_vector_history,
+    create_time_termination_settings,
+    propagate_translational_arc,
+    create_nominal_termination_settings,
+)
 from plotter import Plotter
 from noise_generator import NoiseGenerator
 from environment_customizer import EnvironmentCustomizer
@@ -41,7 +48,7 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 3, 1, 1, 0, 0).to_epoch() 
+simulation_end_epoch = DateTime(2019, 2, 1, 0, 0, 0).to_epoch() 
 time_step = 5.0  # seconds
 number_epochs = int(np.floor((simulation_end_epoch - simulation_start_epoch) / time_step)) + 1
 
@@ -469,10 +476,9 @@ guidance_model = Guidance(
     controlled_satellite="GRACE C",
     reference_satellite="GRACE D",
     target_range=target_range,
-    n_revolutions=1,      
-    distance_threshold=7.5e3,  
-    initial_time=simulation_start_epoch,           
-    burn_duration=200,                   
+    n_revolutions=1,
+    distance_threshold=5e3,
+    cooldown_duration=3600.0,
 )
 
 
@@ -529,9 +535,6 @@ acceleration_settings_grace_c = {
     "Ceres": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
     "Vesta": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
     "Pluto": [dynamics.propagation_setup.acceleration.point_mass_gravity()],
-    "GRACE C": [dynamics.propagation_setup.acceleration.custom_acceleration(
-        guidance_model.get_acceleration
-    )],
 }
 
 
@@ -541,15 +544,7 @@ acceleration_settings = {"GRACE C": acceleration_settings_grace_c, "GRACE D": ac
 acceleration_models = dynamics.propagation_setup.create_acceleration_models(
    bodies, acceleration_settings, bodies_to_propagate, central_bodies)
 
-# Create numerical integrator settings
-integrator_settings = dynamics.propagation_setup.integrator.runge_kutta_fixed_step(
-   time_step=time_step, coefficient_set=dynamics.propagation_setup.integrator.rkf_1412
-)
-
 propagator_type = dynamics.propagation_setup.propagator.cowell
-
-# Create termination settings
-termination_settings = dynamics.propagation_setup.propagator.time_termination(simulation_end_epoch)
 
 earth_gravitational_parameter = bodies.get("Earth").gravitational_parameter
 
@@ -582,45 +577,179 @@ dependent_variables_to_save = [
     dependent_variable.inertial_to_body_fixed_rotation_frame("GRACE D"),
     dependent_variable.keplerian_state("GRACE C", "Earth"),  
     dependent_variable.keplerian_state("GRACE D", "Earth"),
-    dependent_variable.single_acceleration(
-        dynamics.propagation_setup.acceleration.custom_acceleration_type, "GRACE C", "GRACE C"
-    ),
     ]
 
-# Create propagation settings
-propagator_settings = dynamics.propagation_setup.propagator.translational(
-   central_bodies,
-   acceleration_models,
-   bodies_to_propagate,
-   initial_states,
-   simulation_start_epoch,
-   integrator_settings,
-   termination_settings,
-   propagator=propagator_type,
-   output_variables=dependent_variables_to_save,
-)
+state_history_propagation_segments: list[np.ndarray] = []
+dependent_variable_history_propagation_segments: list[np.ndarray] = []
+guidance_log: list[dict[str, float | bool]] = []
 
-# Create simulation object and propagate the dynamics
-dynamics_simulator = dynamics.simulator.create_dynamics_simulator(
-   bodies, propagator_settings
-)
+current_initial_states = np.asarray(initial_states, dtype=float).copy()
+current_initial_time = float(simulation_start_epoch)
+cooldown_end_time = -np.inf
 
-cpu_time_history = dynamics_simulator.cumulative_computation_time_history
-total_cpu_time = list(cpu_time_history.values())[-1]
-function_evaluation = dynamics_simulator.cumulative_number_of_function_evaluations
-total_function_evaluations = list(function_evaluation.values())[-1]
+total_cpu_time = 0.0
+total_function_evaluations = 0
+
+while current_initial_time < simulation_end_epoch:
+    if current_initial_time < cooldown_end_time:
+        current_propagation_arc_label = "cooldown"
+        arc_end_time = min(cooldown_end_time, simulation_end_epoch)
+        termination_settings = create_time_termination_settings(
+            arc_end_time,
+            terminate_exactly_on_final_condition=False,
+        )
+    else:
+        current_propagation_arc_label = "nominal"
+        termination_settings = create_nominal_termination_settings(
+            bodies=bodies,
+            guidance_model=guidance_model,
+            simulation_end_epoch=simulation_end_epoch,
+        )
+
+    dynamics_simulator, propagation_arc_states_array, propagation_arc_dependent_variables_array = propagate_translational_arc(
+        bodies=bodies,
+        central_bodies=central_bodies,
+        acceleration_models=acceleration_models,
+        bodies_to_propagate=bodies_to_propagate,
+        initial_states=current_initial_states,
+        initial_time=current_initial_time,
+        time_step=time_step,
+        termination_settings=termination_settings,
+        propagator_type=propagator_type,
+        output_variables=dependent_variables_to_save,
+    )
+
+    state_history_propagation_segments.append(propagation_arc_states_array)
+    dependent_variable_history_propagation_segments.append(propagation_arc_dependent_variables_array)
+
+    cpu_time_history = dynamics_simulator.cumulative_computation_time_history
+    total_cpu_time += list(cpu_time_history.values())[-1]
+    function_evaluation_history = dynamics_simulator.cumulative_number_of_function_evaluations
+    total_function_evaluations += list(function_evaluation_history.values())[-1]
+
+    current_initial_time = float(propagation_arc_states_array[-1, 0])
+    current_initial_states = get_final_state_vectors(propagation_arc_states_array)
+
+    if current_initial_time >= simulation_end_epoch:
+        break
+
+    if current_propagation_arc_label == "cooldown":
+        continue
+
+    termination_details = dynamics_simulator.propagation_results.termination_details
+    termination_flags = list(
+        getattr(termination_details, "was_condition_met_when_stopping", [])
+    )
+
+    threshold_condition_met = any(termination_flags[1:]) if termination_flags else False
+    if not threshold_condition_met:
+        break
+
+    controlled_state = current_initial_states[:6]
+    reference_state = current_initial_states[6:12]
+    planned_orbit_phasing_maneuver_strategy = guidance_model.plan_orbit_phasing_maneuver_strategy(
+        current_time=current_initial_time,
+        controlled_state=controlled_state,
+        reference_state=reference_state,
+    )
+
+    entry_delta_v_vector = guidance_model.get_impulsive_delta_v_vector(
+        controlled_state,
+        planned_orbit_phasing_maneuver_strategy.entry_delta_v,
+    )
+    current_initial_states = EnvironmentCustomizer.apply_impulsive_velocity_deviation_to_state_vector(
+        current_initial_states,
+        body_index=0,                               # Index referring to GRACE C body object
+        delta_v_vector=entry_delta_v_vector,
+    )
+
+    maneuver_record: dict[str, float | bool] = {
+        "trigger_epoch": planned_orbit_phasing_maneuver_strategy.trigger_epoch,
+        "current_range": planned_orbit_phasing_maneuver_strategy.current_range,
+        "range_error": planned_orbit_phasing_maneuver_strategy.range_error,
+        "entry_delta_v": planned_orbit_phasing_maneuver_strategy.entry_delta_v,
+        "final_phasing_epoch": planned_orbit_phasing_maneuver_strategy.final_phasing_epoch,
+        "phasing_duration": planned_orbit_phasing_maneuver_strategy.phasing_duration,
+        "completed": False,
+    }
+    guidance_log.append(maneuver_record)
+
+    phasing_end_time = min(planned_orbit_phasing_maneuver_strategy.final_phasing_epoch, simulation_end_epoch)
+    dynamics_simulator, propagation_arc_states_array, propagation_arc_dependent_variables_array = propagate_translational_arc(
+        bodies=bodies,
+        central_bodies=central_bodies,
+        acceleration_models=acceleration_models,
+        bodies_to_propagate=bodies_to_propagate,
+        initial_states=current_initial_states,
+        initial_time=current_initial_time,
+        time_step=time_step,
+        termination_settings=create_time_termination_settings(
+            phasing_end_time,
+            terminate_exactly_on_final_condition=True,
+        ),
+        propagator_type=propagator_type,
+        output_variables=dependent_variables_to_save,
+    )
+
+    state_history_propagation_segments.append(propagation_arc_states_array)
+    dependent_variable_history_propagation_segments.append(propagation_arc_dependent_variables_array)
+
+    cpu_time_history = dynamics_simulator.cumulative_computation_time_history
+    total_cpu_time += list(cpu_time_history.values())[-1]
+    function_evaluation_history = dynamics_simulator.cumulative_number_of_function_evaluations
+    total_function_evaluations += list(function_evaluation_history.values())[-1]
+
+    current_initial_time = float(propagation_arc_states_array[-1, 0])
+    current_initial_states = get_final_state_vectors(propagation_arc_states_array)
+    maneuver_record["actual_phasing_end_epoch"] = current_initial_time
+
+    maneuver_completed = planned_orbit_phasing_maneuver_strategy.final_phasing_epoch <= simulation_end_epoch
+    if not maneuver_completed:
+        print(
+            "Stopping at the simulation end epoch before the second impulsive maneuver of the current orbital rephasing could be applied."
+        )
+        break
+
+    exit_delta_v_vector = guidance_model.get_impulsive_delta_v_vector(
+        current_initial_states[:6],
+        planned_orbit_phasing_maneuver_strategy.exit_delta_v,
+    )
+    current_initial_states = EnvironmentCustomizer.apply_impulsive_velocity_deviation_to_state_vector(
+        current_initial_states,
+        body_index=0,
+        delta_v_vector=exit_delta_v_vector,
+    )
+
+    maneuver_record["completed"] = True
+    maneuver_record["exit_epoch"] = current_initial_time
+    maneuver_record["exit_delta_v"] = planned_orbit_phasing_maneuver_strategy.exit_delta_v
+
+    cooldown_end_time = min(
+        current_initial_time + guidance_model.cooldown_duration,
+        simulation_end_epoch,
+    )
+
+    if current_initial_time >= simulation_end_epoch:
+        break
+
 print("\n=================================")
 print(f"Propagation CPU time : ", total_cpu_time)
 print(f"Number of function evaluations : ", total_function_evaluations)
+print(f"Number of phasing maneuvers : ", len(guidance_log))
+print(
+    "Total applied delta-v [m/s] : ",
+    sum(
+        abs(float(maneuver_record["entry_delta_v"]))
+        + (abs(float(maneuver_record["exit_delta_v"])) if maneuver_record.get("completed", False) else 0.0)
+        for maneuver_record in guidance_log
+    ),
+)
 print("=================================\n")
 
-
-# Extract the resulting state history and convert it to an ndarray
-states = dynamics_simulator.propagation_results.state_history
-states_array = result2array(states)
-dependent_variables_history = dynamics_simulator.propagation_results.dependent_variable_history
-dependent_variables_array = result2array(dependent_variables_history)
-
+states_array = restructure_vector_history(np.vstack(state_history_propagation_segments))
+dependent_variables_array = restructure_vector_history(
+    np.vstack(dependent_variable_history_propagation_segments)
+)
 
 # =====================================
 # PLOTTING GRACE-FO RELATED DATA
@@ -668,9 +797,9 @@ plotter.plot_aerodynamic_acceleration_time_series(
     dependent_variables_array=dependent_variables_array,
 )
 
-plotter.plot_custom_acceleration_time_series(
-    dependent_variables_array=dependent_variables_array,
-    states_array=states_array,
+plotter.plot_impulsive_delta_v_time_series(
+    maneuver_log=guidance_log,
+    simulation_start_epoch=simulation_start_epoch,
 )
 
 plotter.plot_attitude_triads_orientation(
@@ -728,7 +857,7 @@ eci_gps_position_noise = {
 # Generate KBR system and oscillator noise time series for each satellite
 kbr_system_and_oscillator_noise_timeseries = NoiseGenerator.generate_kbr_system_and_oscillator_noise(
    plotter,
-   number_epochs,
+   states_array.shape[0],
    seed=42,
    noise_model_version=noise_model_version,
 )

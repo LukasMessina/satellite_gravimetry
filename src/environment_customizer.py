@@ -52,3 +52,17 @@ class EnvironmentCustomizer:
             return rot_matrix_losf_to_j2000 @ rot_sf_to_losf
 
         return custom_rotation_matrix_function
+    
+    @staticmethod
+    def apply_impulsive_velocity_deviation_to_state_vector(
+            state_vector: np.ndarray,
+            body_index: int,
+            delta_v_vector: np.ndarray,
+        ) -> np.ndarray:
+            updated_state_vector = np.asarray(state_vector, dtype=float).copy()
+            velocity_start_index = 6 * body_index + 3
+            updated_state_vector[velocity_start_index:velocity_start_index + 3] += np.asarray(
+                delta_v_vector,
+                dtype=float,
+            )
+            return updated_state_vector

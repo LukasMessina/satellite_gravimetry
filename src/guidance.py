@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
 from scipy.integrate import quad
 from scipy.optimize import brentq
 from tudatpy.astro import element_conversion
@@ -9,35 +10,38 @@ import math
 import numpy as np
 
 
-@dataclass
-class OrbitPhaseShiftingWindow:
-    start_time: float
-    end_time: float
-    acceleration_magnitude: float
+@dataclass(frozen=True)
+class OrbitPhaseShiftingManeuver:
+    trigger_epoch: float
+    current_range: float
+    range_error: float
+    phasing_orbit_semi_major_axis: float
+    phasing_orbit_period: float
+    phasing_duration: float
+    entry_delta_v: float
+    exit_delta_v: float
+
+    @property
+    def final_phasing_epoch(self) -> float:
+        return self.trigger_epoch + self.phasing_duration
 
 
 class Guidance:
     """
-    Simple orbit phase shifting guidance for keeping a deputy/reference separation bounded.
+    Orbit phase shifting planner for keeping a deputy/reference separation bounded.
 
     Strategy
     --------
     - Monitor the current relative distance between controlled_satellite and
       reference_satellite.
     - If the distance deviates from the nominal one by more than distance_threshold,
-      compute a phase correction from the current along-track error.
+      compute a phase correction from the current range error.
     - Convert the needed phase correction into a semi-major-axis offset using the
-      orbital period linearization with respect to semi-major axis.
-      where N is the integer number of phasing revolutions.
-    - Execute two equal-and-opposite short tangential burns:
+      orbital period linearization with respect to semi-major axis, over
+      n_revolutions phasing revolutions.
+    - Return two equal-and-opposite tangential impulsive maneuvers:
         * burn 1: enter phasing orbit
         * burn 2: exit phasing orbit after N revolutions
-
-    Notes
-    -----
-    - The function is safe under Tudat's NaN-reset protocol for custom models.
-    - The trigger uses range deviation, but the correction itself is based on the
-      along-track error, since that is what the phasing maneuver primarily fixes.
     """
 
     def __init__(
@@ -48,232 +52,110 @@ class Guidance:
         target_range: float,
         n_revolutions: int,
         distance_threshold: float,
-        initial_time: float,
-        burn_duration: float = 10.0,
+        cooldown_duration: float = 3600.0,
     ):
-        self.bodies = bodies
         self.controlled_satellite = controlled_satellite
         self.reference_satellite = reference_satellite
-        self.controlled_body = bodies.get(controlled_satellite)
-        self.reference_body = bodies.get(reference_satellite)
         self.central_body = bodies.get("Earth")
         self.central_gravitational_parameter = float(self.central_body.gravitational_parameter)
-        self.target_range = target_range
+        self.target_range = float(target_range)
         self.distance_threshold = float(distance_threshold)
-        self.burn_duration = float(burn_duration)
-        self.n_revolutions = n_revolutions
-        self.initial_time = initial_time
+        self.n_revolutions = int(n_revolutions)
+        self.cooldown_duration = float(cooldown_duration)
 
-        self.current_time = float("nan")
-        self.current_acceleration = np.zeros(3)
-
-        self.active_thrust_firing_windows: list[OrbitPhaseShiftingWindow] = []
-        self.last_exit_burn_end_time = -np.inf
-
-
-    def get_acceleration(self, current_time: float) -> np.ndarray:
-        """
-        Return the inertial custom acceleration at current_time.
-        """
-        self._update_guidance(current_time)
-        return self.current_acceleration
-
-    # ============================================= 
-    #               Main Update Logic
-    # ============================================= 
-    def _update_guidance(self, current_time: float) -> None:
-        # Tudat uses NaN to signal the start of a fresh full state-derivative evaluation.
-        if math.isnan(current_time):
-            self.current_time = float("nan")
-            self.current_acceleration = np.zeros(3)
-            return
-
-        # Avoid recomputing if Tudat calls this custom model multiple times for the same
-        # state-derivative evaluation.
-        if current_time == self.current_time:
-            return
-        
-
-        self.current_time = current_time
-        self.current_acceleration = np.zeros(3)
-
-        controlled_state = np.asarray(self.controlled_body.state, dtype=float).copy()
-        reference_state = np.asarray(self.reference_body.state, dtype=float).copy()
-
-        controlled_position = controlled_state[:3]
-        controlled_velocity = controlled_state[3:]
-        reference_position = reference_state[:3]
-        reference_velocity = reference_state[3:]
-
-        relative_position_inertial = controlled_position - reference_position
-        relative_velocity_inertial = controlled_velocity - reference_velocity
-
-        rtn_to_inertial_matrix = self._rtn_to_inertial_matrix(reference_position, reference_velocity)
-        inertial_to_rtn_matrix = rtn_to_inertial_matrix.T
-
-        relative_position_rtn = inertial_to_rtn_matrix @ relative_position_inertial
-        relative_velocity_rtn = inertial_to_rtn_matrix @ relative_velocity_inertial
-
-        current_range = float(np.linalg.norm(relative_position_rtn))
+    def get_intersatellite_range_error(
+        self,
+        controlled_state: np.ndarray,
+        reference_state: np.ndarray,
+    ) -> tuple[float, float]:
+        controlled_state = np.asarray(controlled_state, dtype=float)
+        reference_state = np.asarray(reference_state, dtype=float)
+        current_range = float(np.linalg.norm(controlled_state[:3] - reference_state[:3]))
         range_error = current_range - self.target_range
+        return current_range, range_error
 
-        # If we are currently in one of the scheduled quasi-impulsive thrust firings time windows,
-        # align the thrust with the instantaneous velocity direction.
-        for i, window in enumerate(self.active_thrust_firing_windows):
-            if window.start_time <= current_time < window.end_time:
-                self.current_acceleration = self._get_tangential_acceleration(
-                    controlled_velocity,
-                    window.acceleration_magnitude,
-                )
-                if len(self.active_thrust_firing_windows) == 2 and i == 0:
-                    print("Applying thrust firing 1")
-                else:
-                    print("Applying thrust firing 2")
-                return
-
-        # Remove already completed thrust firing windows
-        self.active_thrust_firing_windows = [window for window in self.active_thrust_firing_windows if window.end_time > current_time]
-
-        # Do not start a new maneuver before the previous one has completed and the buffer time has passed
-        if current_time - (self.last_exit_burn_end_time + 3600) <= 0.0:
-            return
-
-        # Trigger on total range deviation
-        if abs(range_error) <= self.distance_threshold:
-            return
-
-        # Plan a phasing maneuver
-        self._plan_orbit_phasing_maneuver(
-            current_time=current_time,
-            reference_state=reference_state,
-            controlled_state=controlled_state,
-            range_error=range_error,
-        )
-
-        for window in self.active_thrust_firing_windows:
-            if window.start_time <= current_time < window.end_time:
-                self.current_acceleration = self._get_tangential_acceleration(
-                    controlled_velocity,
-                    window.acceleration_magnitude,
-                )
-                return
-            
-    # ============================================= 
-    #           Maneuver Planning Logic
-    # ============================================= 
-    def _plan_orbit_phasing_maneuver(
+    def plan_orbit_phasing_maneuver_strategy(
         self,
         current_time: float,
-        reference_state: np.ndarray,
         controlled_state: np.ndarray,
-        range_error: float,
-    ) -> None:
-        
-        reference_position = reference_state[:3]
-        reference_velocity = reference_state[3:]
+        reference_state: np.ndarray,
+    ) -> OrbitPhaseShiftingManeuver | None:
+        controlled_state = np.asarray(controlled_state, dtype=float)
+        reference_state = np.asarray(reference_state, dtype=float)
+
+        current_range, range_error = self.get_intersatellite_range_error(controlled_state, reference_state)
+        if abs(range_error) <= self.distance_threshold:
+            return None
+
         controlled_position = controlled_state[:3]
         controlled_velocity = controlled_state[3:]
 
         controlled_orbital_elements = element_conversion.cartesian_to_keplerian(
-            controlled_state, 
-            self.central_gravitational_parameter
+            controlled_state,
+            self.central_gravitational_parameter,
         )
 
         controlled_semi_major_axis = controlled_orbital_elements[0]
         controlled_eccentricity = controlled_orbital_elements[1]
         controlled_true_anomaly = controlled_orbital_elements[5]
 
-        # Convert the needed range correction into a phase angle using an arc-length inversion.
         true_anomaly_shift = self._arc_length_to_true_anomaly_shift(
-                semi_major_axis=controlled_semi_major_axis,
-                eccentricity=controlled_eccentricity,
-                initial_true_anomaly=controlled_true_anomaly,
-                arc_length=-range_error,
-            )
+            semi_major_axis=controlled_semi_major_axis,
+            eccentricity=controlled_eccentricity,
+            initial_true_anomaly=controlled_true_anomaly,
+            arc_length=-range_error,
+        )
 
-        # Controlled satellite orbital period
-        initial_orbital_period = 2.0 * math.pi * math.sqrt(
-            controlled_semi_major_axis**3 / self.central_gravitational_parameter)
+        semi_major_axis_variation = (
+            -true_anomaly_shift * controlled_semi_major_axis
+        ) / (3.0 * math.pi * self.n_revolutions)
 
-        # linearization:
-        delta_semi_major_axis = (-true_anomaly_shift * controlled_semi_major_axis) / (3.0 * math.pi * self.n_revolutions)
+        if abs(semi_major_axis_variation) < 1e-6:
+            return None
 
-        # If the correction is too small, skip it.
-        if abs(delta_semi_major_axis) < 1e-6:
-            return
-
-        phasing_orbit_semi_major_axis = controlled_semi_major_axis + delta_semi_major_axis
+        phasing_orbit_semi_major_axis = controlled_semi_major_axis + semi_major_axis_variation
 
         initial_position_norm = float(np.linalg.norm(controlled_position))
         initial_velocity_norm = float(np.linalg.norm(controlled_velocity))
 
-        vis_viva_argument = self.central_gravitational_parameter * (2.0 / initial_position_norm - 1.0 / phasing_orbit_semi_major_axis)
+        vis_viva_argument = self.central_gravitational_parameter * (
+            2.0 / initial_position_norm - 1.0 / phasing_orbit_semi_major_axis
+        )
         if vis_viva_argument <= 0.0:
-            return
+            return None
 
         phasing_orbit_initial_velocity_norm = math.sqrt(vis_viva_argument)
+        entry_delta_v = phasing_orbit_initial_velocity_norm - initial_velocity_norm
 
-        # Tangential ΔV to enter phasing orbit
-        first_delta_v = phasing_orbit_initial_velocity_norm - initial_velocity_norm
+        if abs(entry_delta_v) < 1e-9:
+            return None
 
-        # Ignore numerically irrelevant maneuvers
-        if abs(first_delta_v) < 1e-9:
-            return
+        phasing_orbit_period = 2.0 * math.pi * math.sqrt(
+            phasing_orbit_semi_major_axis**3 / self.central_gravitational_parameter
+        )
+        phasing_duration = self.n_revolutions * phasing_orbit_period
 
-        first_acceleration_magnitude = first_delta_v / self.burn_duration
-
-        phasing_orbit_orbital_period = 2.0 * math.pi * math.sqrt(phasing_orbit_semi_major_axis**3 / self.central_gravitational_parameter)
-        exit_burn_start_time = (
-            current_time
-            + self.n_revolutions * phasing_orbit_orbital_period
+        return OrbitPhaseShiftingManeuver(
+            trigger_epoch=float(current_time),
+            current_range=current_range,
+            range_error=range_error,
+            phasing_orbit_semi_major_axis=float(phasing_orbit_semi_major_axis),
+            phasing_orbit_period=float(phasing_orbit_period),
+            phasing_duration=float(phasing_duration),
+            entry_delta_v=float(entry_delta_v),
+            exit_delta_v=float(-entry_delta_v),
         )
 
-        # Equal and opposite exit quasi impulsive firing
-        second_acceleration_magnitude = -first_acceleration_magnitude
-
-        self.active_thrust_firing_windows = [
-            OrbitPhaseShiftingWindow(
-                start_time=current_time,
-                end_time=current_time + self.burn_duration,
-                acceleration_magnitude=first_acceleration_magnitude,
-            ),
-            OrbitPhaseShiftingWindow(
-                start_time=exit_burn_start_time,
-                end_time=exit_burn_start_time + self.burn_duration,
-                acceleration_magnitude=second_acceleration_magnitude,
-            ),
-        ]
-
-        self.last_exit_burn_end_time = exit_burn_start_time + self.burn_duration
-
-    # =====================================
-    #           Geometry Helpers
-    # =====================================
     @staticmethod
-    def _rtn_to_inertial_matrix(position: np.ndarray, velocity: np.ndarray) -> np.ndarray:
-        """
-        Return the RTN to J2000 rotation matrix based on a reference state.
-        Columns are the inertial components of R, T, N unit vectors.
-        """
-        radial_unit_vector = position / np.linalg.norm(position)
-        angular_momentum = np.cross(position, velocity)
-        normal_unit_vector = angular_momentum / np.linalg.norm(angular_momentum)
-        along_track_unit_vector = np.cross(normal_unit_vector, radial_unit_vector)
-        return np.column_stack((radial_unit_vector, along_track_unit_vector, normal_unit_vector))
-
-    @staticmethod
-    def _get_tangential_acceleration(
-        velocity: np.ndarray,
-        acceleration_magnitude: float,
+    def get_impulsive_delta_v_vector(
+        state: np.ndarray,
+        delta_v: float,
     ) -> np.ndarray:
-        """
-        Return an inertial acceleration parallel to the instantaneous velocity vector.
-        """
-        return acceleration_magnitude * velocity / np.linalg.norm(velocity)
+        state = np.asarray(state, dtype=float)
+        velocity = state[3:]
+        velocity_norm = float(np.linalg.norm(velocity))
+        return delta_v * velocity / velocity_norm
 
-    # =============================================================
-    #           Arc-length to true anomaly shift conversion
-    # =============================================================
     @staticmethod
     def _arc_length_to_true_anomaly_shift(
         semi_major_axis: float,
@@ -285,10 +167,11 @@ class Guidance:
     ) -> float:
         """
         Given an osculating ellipse and a requested arc length, solve for the
-        true-anomaly increment or decrement such that the orbital prograde or retrograde arc length from the initial
-        true anomaly to the shifted true anomaly equals the prograde (positive sign) or retrograde (negative sign) arc_length.
+        true-anomaly increment or decrement such that the orbital prograde or
+        retrograde arc length from the initial true anomaly to the shifted true
+        anomaly equals arc_length.
         """
-        
+
         if arc_length == 0:
             return 0.0
 
@@ -315,8 +198,10 @@ class Guidance:
 
         def root_function(delta_nu: float) -> float:
             return get_arc_length(delta_nu) - arc_length
-        
-        initial_radius = semi_latus_rectum / (1.0 + eccentricity * math.cos(initial_true_anomaly))
+
+        initial_radius = semi_latus_rectum / (
+            1.0 + eccentricity * math.cos(initial_true_anomaly)
+        )
         delta_nu_guess = arc_length / initial_radius
 
         lower_bound = min(0.5 * delta_nu_guess, 1.5 * delta_nu_guess)
@@ -364,7 +249,9 @@ class Guidance:
             iteration += 1
 
         if func_value_lower_bound * func_value_upper_bound > 0.0:
-            raise RuntimeError("Could not bracket Δν for the requested arc length within one revolution.")
+            raise RuntimeError(
+                "Could not bracket delta-nu for the requested arc length within one revolution."
+            )
 
         delta_nu = brentq(
             root_function,

@@ -456,6 +456,81 @@ class Plotter:
         fig.savefig(self.output_path / second_file_name, bbox_inches="tight", pad_inches=0.25)
         plt.close(fig)
 
+    def plot_impulsive_delta_v_time_series(
+        self,
+        maneuver_log: list[dict[str, float | bool]],
+        simulation_start_epoch: float,
+        file_name: str = "grace_c_impulsive_delta_v_sequence.png",
+    ) -> None:
+        """Plot the signed impulsive delta-v sequence for GRACE C."""
+
+        if not maneuver_log:
+            return
+
+        entry_times_hours = []
+        entry_delta_v_values = []
+        exit_times_hours = []
+        exit_delta_v_values = []
+
+        for maneuver in maneuver_log:
+            entry_times_hours.append(
+                (float(maneuver["trigger_epoch"]) - simulation_start_epoch) / 3600.0
+            )
+            entry_delta_v_values.append(float(maneuver["entry_delta_v"]))
+
+            if maneuver.get("completed", False):
+                exit_times_hours.append(
+                    (float(maneuver["exit_epoch"]) - simulation_start_epoch) / 3600.0
+                )
+                exit_delta_v_values.append(float(maneuver["exit_delta_v"]))
+
+        fig = plt.figure(figsize=(9.0, 5.0), dpi=300)
+        ax = fig.add_subplot(111)
+
+        ax.axhline(0.0, color="black", linewidth=1.0, linestyle="--", alpha=0.8)
+        ax.vlines(
+            entry_times_hours,
+            0.0,
+            entry_delta_v_values,
+            color="#0742A0",
+            linewidth=2.0,
+            label="Entry impulse",
+        )
+        ax.scatter(
+            entry_times_hours,
+            entry_delta_v_values,
+            color="#0742A0",
+            s=36,
+            zorder=3,
+        )
+
+        if exit_times_hours:
+            ax.vlines(
+                exit_times_hours,
+                0.0,
+                exit_delta_v_values,
+                color="#C13B1B",
+                linewidth=2.0,
+                label="Exit impulse",
+            )
+            ax.scatter(
+                exit_times_hours,
+                exit_delta_v_values,
+                color="#C13B1B",
+                s=36,
+                zorder=3,
+            )
+
+        ax.set_title("Impulsive delta-v sequence — GRACE C")
+        ax.set_xlabel("Propagation time [hours]")
+        ax.set_ylabel(r"$\Delta V$ [m/s]")
+        ax.grid(True)
+        ax.legend(loc="best")
+
+        fig.tight_layout()
+        fig.savefig(self.output_path / file_name, bbox_inches="tight")
+        plt.close(fig)
+
     def plot_custom_acceleration_time_series(
         self,
         dependent_variables_array: np.ndarray,
@@ -888,13 +963,12 @@ class Plotter:
             # Convert the digitized frequencies from Hz to mHz for display.
             idx = np.argsort(x)
             x_mhz = x[idx] * 1e3
-            ax.loglog(x_mhz, y[idx], linewidth=2, color="#073AA0", label="Kinematic Orbit")
+            ax.loglog(x_mhz, y[idx], linewidth=1.5, color="#073AA0")
 
-        ax.set_title("Relative Position Error ASD (plot digitizer)")
+        ax.set_title("Relative Position Error ASD")
         ax.set_xlabel("Frequency [mHz]")
         ax.set_ylabel(r"ASD [m Hz$^{-1/2}$]")
-        ax.set_ylim(1e-3, 1e0)
-        ax.legend(loc="upper right", frameon=True)
+        ax.set_ylim(1e-4, 1e0)
 
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
@@ -1026,7 +1100,7 @@ class Plotter:
                     estimated_psd_values[component_idx],
                     color="#D8660E",
                     label="Welch Estimated PSD",
-                    linewidth=1.8,
+                    linewidth=2,
                 )
                 ax.loglog(
                     input_frequencies,
@@ -1034,7 +1108,6 @@ class Plotter:
                     color="#073AA0",
                     label="Input PSD",
                     linewidth=1.5,
-                    linestyle="--",
                 )
                 ax.set_title(f"{component_label} Component")
                 ax.set_xlabel("Frequency [Hz]")
