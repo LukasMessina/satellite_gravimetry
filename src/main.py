@@ -48,7 +48,7 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 2, 1, 0, 0, 0).to_epoch() 
+simulation_end_epoch = DateTime(2019, 3, 1, 0, 0, 0).to_epoch() 
 time_step = 5.0  # seconds
 number_epochs = int(np.floor((simulation_end_epoch - simulation_start_epoch) / time_step)) + 1
 
@@ -824,7 +824,7 @@ else:
     
 eci_gps_position_noise_grace_c, rtn_gps_position_noise_grace_c = NoiseGenerator.generate_gps_position_noise(
     plotter=plotter,
-    num_epochs=number_epochs,
+    num_epochs=states_array.shape[0],
     state_vector=states_array[:, 1:7],  # GRACE C state
     sigma_rtn=sigma_gps_position_rtn,
     seed=80,
@@ -835,7 +835,7 @@ eci_gps_position_noise_grace_c, rtn_gps_position_noise_grace_c = NoiseGenerator.
 
 eci_gps_position_noise_grace_d, rtn_gps_position_noise_grace_d = NoiseGenerator.generate_gps_position_noise(
     plotter=plotter,
-    num_epochs=number_epochs,
+    num_epochs=states_array.shape[0],
     state_vector=states_array[:, 7:13],  # GRACE D state
     sigma_rtn=sigma_gps_position_rtn,
     seed=90,

@@ -521,7 +521,7 @@ class Plotter:
                 zorder=3,
             )
 
-        ax.set_title("Impulsive delta-v sequence — GRACE C")
+        ax.set_title(r"Impulsive $\Delta V$  sequence — GRACE C")
         ax.set_xlabel("Propagation time [hours]")
         ax.set_ylabel(r"$\Delta V$ [m/s]")
         ax.grid(True)
