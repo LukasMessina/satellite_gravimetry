@@ -48,12 +48,15 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 3, 1, 0, 0, 0).to_epoch() 
+simulation_end_epoch = DateTime(2019, 1, 1, 2, 0, 0).to_epoch() 
 time_step = 5.0  # seconds
-number_epochs = int(np.floor((simulation_end_epoch - simulation_start_epoch) / time_step)) + 1
+# Add a small epoch buffer so the pointing-angle time series still spans the
+# full simulation window if orbit-phasing maneuvers introduce slight timing offsets.
+epochs_buffer = 2
+number_epochs = int(np.floor((simulation_end_epoch - simulation_start_epoch) / time_step)) + 1 + epochs_buffer
 
 # =====================================
-# ASD NOISE GENERATION 
+# ERROR-FREE POINTING ANGLES GENERATION 
 # =====================================
 
 plotter = Plotter(output_path=Path("./GRACE-FO/plots"))
@@ -72,44 +75,12 @@ Plotter.plot_pointing_angles_asd(
 )
 
 error_free_pointing_angles_time_series = dict()
-noisy_attitude_time_series = dict()
-
-# NOTE: These values are taken from the source code associated with the paper
-# "Instrument data simulations for GRACE Follow-on: observation and noise models"
-# by Neda Darbeheshti et al. The code is available at:
-# https://github.com/Darbeheshti/GRACE-Follow-On-simulator
-
-white_noise_asd_values = {
-    "GRACE C": {
-        "roll": 20e-6,
-        "pitch": 20e-6,
-        "yaw": 20e-6,
-    },
-    "GRACE D": {
-        "roll": 20e-6,
-        "pitch": 20e-6,
-        "yaw": 20e-6,
-    }
-}
-
-bias_noise_values = {
-    "GRACE C": {
-        "roll": 1.2e-3,
-        "pitch": -2.2e-3,
-        "yaw": 1.8e-3,
-    },
-    "GRACE D": {
-        "roll": -2.9e-3,
-        "pitch": -1.8e-3,
-        "yaw": 2.1e-3,
-    }
-}
 
 for satellite, seed in zip(["GRACE C", "GRACE D"], [42, 43]):
     
    # Generate pointing angles noise time series for each satellite
 
-    error_free_pointing_angles_time_series[satellite], noisy_attitude_time_series[satellite] = NoiseGenerator.generate_pointing_angles_noise(
+    error_free_pointing_angles_time_series[satellite] = NoiseGenerator.generate_error_free_pointing_angles(
         plotter,
         pitch_history_json_path,
         yaw_history_json_path,
@@ -117,18 +88,16 @@ for satellite, seed in zip(["GRACE C", "GRACE D"], [42, 43]):
         number_epochs,
         satellite_label=satellite,
         seed=seed,
-        white_noise_asd_values=white_noise_asd_values[satellite],
-        bias_noise_values=bias_noise_values[satellite]
     )
 
 rotation_model_context: dict[str, object] = {"bodies": None}
-attitude_noise_sample_times = simulation_start_epoch + np.arange(number_epochs, dtype=float) * time_step
+error_free_attitude_sample_times = simulation_start_epoch + np.arange(number_epochs, dtype=float) * time_step
 
 grace_c_custom_rotation_matrix_callable = EnvironmentCustomizer.create_custom_spacecraft_rotation_function(
     spacecraft_name="GRACE C",
     counterpart_name="GRACE D",
     attitude_noise_history=error_free_pointing_angles_time_series["GRACE C"],
-    sample_times=attitude_noise_sample_times,
+    sample_times=error_free_attitude_sample_times,
     rotation_model_context=rotation_model_context,
 )
 
@@ -136,7 +105,7 @@ grace_d_custom_rotation_matrix_callable = EnvironmentCustomizer.create_custom_sp
     spacecraft_name="GRACE D",
     counterpart_name="GRACE C",
     attitude_noise_history=error_free_pointing_angles_time_series["GRACE D"],
-    sample_times=attitude_noise_sample_times,
+    sample_times=error_free_attitude_sample_times,
     rotation_model_context=rotation_model_context,
 )
 
@@ -653,6 +622,11 @@ while current_initial_time < simulation_end_epoch:
         reference_state=reference_state,
     )
 
+    if planned_orbit_phasing_maneuver_strategy is None:
+        raise RuntimeError(
+            "The intersatellite range threshold was crossed, but no valid orbit-phasing maneuver could be computed."
+        )
+
     entry_delta_v_vector = guidance_model.get_impulsive_delta_v_vector(
         controlled_state,
         planned_orbit_phasing_maneuver_strategy.entry_delta_v,
@@ -746,10 +720,19 @@ print(
 )
 print("=================================\n")
 
-states_array = restructure_vector_history(np.vstack(state_history_propagation_segments))
-dependent_variables_array = restructure_vector_history(
-    np.vstack(dependent_variable_history_propagation_segments)
+stacked_state_history = np.vstack(state_history_propagation_segments)
+del state_history_propagation_segments
+states_array = restructure_vector_history(stacked_state_history)
+del stacked_state_history
+
+stacked_dependent_variable_history = np.vstack(
+    dependent_variable_history_propagation_segments
 )
+del dependent_variable_history_propagation_segments
+dependent_variables_array = restructure_vector_history(
+    stacked_dependent_variable_history
+)
+del stacked_dependent_variable_history
 
 # =====================================
 # PLOTTING GRACE-FO RELATED DATA
@@ -809,6 +792,69 @@ plotter.plot_attitude_triads_orientation(
     file_name="grace_attitude_triads_epoch_100.png"
 )
 
+del dependent_variables_array
+
+# =====================================
+# POINTING ANGLES NOISE GENERATION 
+# =====================================
+
+noisy_attitude_time_series = dict()
+
+# NOTE: These values are taken from the source code associated with the paper
+# "Instrument data simulations for GRACE Follow-on: observation and noise models"
+# by Neda Darbeheshti et al. The code is available at:
+# https://github.com/Darbeheshti/GRACE-Follow-On-simulator
+
+white_noise_asd_values = {
+    "GRACE C": {
+        "roll": 20e-6,
+        "pitch": 20e-6,
+        "yaw": 20e-6,
+    },
+    "GRACE D": {
+        "roll": 20e-6,
+        "pitch": 20e-6,
+        "yaw": 20e-6,
+    }
+}
+
+bias_noise_values = {
+    "GRACE C": {
+        "roll": 1.2e-3,
+        "pitch": -2.2e-3,
+        "yaw": 1.8e-3,
+    },
+    "GRACE D": {
+        "roll": -2.9e-3,
+        "pitch": -1.8e-3,
+        "yaw": 2.1e-3,
+    }
+}
+
+for satellite, seed, position, velocity in zip(
+    ["GRACE C", "GRACE D"],
+    [42, 43],
+    grace_fo_position_data,
+    grace_fo_velocity_data,
+):
+    
+    counterpart_position = grace_fo_position_data[1] if satellite == "GRACE C" else grace_fo_position_data[0]
+    # Generate pointing angles noise time series for each satellite
+    noisy_attitude_time_series[satellite] = NoiseGenerator.generate_pointing_angles_noise(
+        plotter,
+        position,
+        velocity,
+        counterpart_position=counterpart_position,
+        error_free_attitude_sample_times=error_free_attitude_sample_times,
+        error_free_pointing_angles_time_series=error_free_pointing_angles_time_series[satellite],
+        noisy_attitude_sample_times=states_array[:, 0],
+        satellite_label=satellite,
+        seed=seed,
+        noise_model_version=noise_model_version,
+        white_noise_asd_values=white_noise_asd_values,
+        bias_noise_values=bias_noise_values,
+    )
+
 
 # =====================================
 # GPS POSITION MEASUREMENT SIMULATION 
@@ -822,7 +868,7 @@ else:
     relative_position_error_asd_json_path=Path("data/relative_position_error_asd_data.json")
 
     
-eci_gps_position_noise_grace_c, rtn_gps_position_noise_grace_c = NoiseGenerator.generate_gps_position_noise(
+eci_gps_position_noise_grace_c = NoiseGenerator.generate_gps_position_noise(
     plotter=plotter,
     num_epochs=states_array.shape[0],
     state_vector=states_array[:, 1:7],  # GRACE C state
@@ -833,7 +879,7 @@ eci_gps_position_noise_grace_c, rtn_gps_position_noise_grace_c = NoiseGenerator.
     noise_model_version=noise_model_version,
 )
 
-eci_gps_position_noise_grace_d, rtn_gps_position_noise_grace_d = NoiseGenerator.generate_gps_position_noise(
+eci_gps_position_noise_grace_d = NoiseGenerator.generate_gps_position_noise(
     plotter=plotter,
     num_epochs=states_array.shape[0],
     state_vector=states_array[:, 7:13],  # GRACE D state

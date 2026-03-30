@@ -29,8 +29,7 @@ class EnvironmentCustomizer:
             pitch = float(np.interp(current_time, sample_times, pitch_history))
             roll  = float(np.interp(current_time, sample_times, roll_history))            
 
-            rot_matrix_losf_to_sf = Rotation.from_euler("ZYX", [yaw, pitch, roll], degrees=False).as_matrix()
-            rot_sf_to_losf = rot_matrix_losf_to_sf.T
+            rot_matrix_sf_to_losf = Rotation.from_euler("ZYX", [yaw, pitch, roll], degrees=False).as_matrix()
 
             bodies = rotation_model_context.get("bodies")
 
@@ -49,7 +48,7 @@ class EnvironmentCustomizer:
             rot_matrix_losf_to_j2000 = np.stack([x_losf, y_losf, z_losf], axis=-1)
 
 
-            return rot_matrix_losf_to_j2000 @ rot_sf_to_losf
+            return rot_matrix_losf_to_j2000 @ rot_matrix_sf_to_losf
 
         return custom_rotation_matrix_function
     

@@ -106,7 +106,8 @@ class Plotter:
         ax.grid(True)
 
         plt.tight_layout()
-        plt.savefig(self.output_path / file_name, dpi = 720)
+        fig.savefig(self.output_path / file_name, dpi=720)
+        plt.close(fig)
 
     def plot_attitude_triads_orientation(
         self,
@@ -376,7 +377,7 @@ class Plotter:
         cross_track_distance = np.einsum("ij,ij->i", relative_position, h_hat) / 1e3 # [km]
         relative_position_norm = np.linalg.norm(relative_position, axis=1) / 1e3     # [km]
 
-        plt.figure(figsize=(7, 4.5), dpi=360)
+        fig = plt.figure(figsize=(7, 4.5), dpi=360)
         plt.plot(t_days, along_track_distance, linewidth=2.5, label="Along-track (T)", color="tab:blue")
         plt.plot(t_days, radial_distance, linewidth=2.5, linestyle="--", label="Radial (R)", color="tab:orange")
         plt.plot(t_days, cross_track_distance, linewidth=2.8, linestyle=":", label="Cross-track (N)", color="tab:green")
@@ -388,16 +389,17 @@ class Plotter:
         plt.grid(True)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(self.output_path / first_file_name)
+        fig.savefig(self.output_path / first_file_name)
+        plt.close(fig)
 
         fig = plt.figure(figsize=(11, 8.2), dpi=300)
         ax = fig.add_subplot(111, projection="3d")
 
         # Crop the data for better visualization of the relative trajectory shape
-        cross_track_distance = cross_track_distance[:60000]
-        radial_distance = radial_distance[:60000]
-        along_track_distance = along_track_distance[:60000]
-        propagation_time_hours = ((time_data - time_data[0]) / 3600.0)[:60000]
+        cross_track_distance = cross_track_distance[:10000]
+        radial_distance = radial_distance[:10000]
+        along_track_distance = along_track_distance[:10000]
+        propagation_time_hours = ((time_data - time_data[0]) / 3600.0)[:10000]
 
 
         ax.xaxis.set_major_formatter(FormatStrFormatter('%.1e'))
@@ -661,7 +663,8 @@ class Plotter:
 
         fig.suptitle("RTN noise samples and uncertainty ellipses")
         plt.tight_layout()
-        plt.savefig(self.output_path / file_name)
+        fig.savefig(self.output_path / file_name)
+        plt.close(fig)
 
     def plot_acceleration_finite_difference_statistics(
         self,
@@ -1192,7 +1195,7 @@ class Plotter:
 
     def plot_apc_pointing_jitter_coupling_time_series_demeaned(
         self,
-        apc_pointing_jitter_coupling_noise: dict[str, np.ndarray],
+        apc_pointing_jitter_coupling_noise: np.ndarray,
         time_seconds: np.ndarray,
         satellite_label: str,
         file_name: str,
@@ -1212,10 +1215,8 @@ class Plotter:
             Output file name (saved under self.output_path).
         """
 
-        if satellite_label not in apc_pointing_jitter_coupling_noise:
-            raise KeyError(f"Satellite '{satellite_label}' not found in APC coupling noise dict.")
 
-        value = np.asarray(apc_pointing_jitter_coupling_noise[satellite_label], dtype=float).reshape(-1)
+        value = np.asarray(apc_pointing_jitter_coupling_noise, dtype=float).reshape(-1)
         time = np.asarray(time_seconds, dtype=float).reshape(-1)
 
         if time.shape[0] != value.shape[0]:
@@ -1234,14 +1235,14 @@ class Plotter:
 
     def plot_residual_apc_coupling_jitter_noise_time_series(
         self,
-        residual_apc_coupling_jitter_noise: dict[str, np.ndarray],
+        residual_apc_coupling_jitter_noise: np.ndarray,
         time_seconds: np.ndarray,
         satellite: str,
         file_name: str,
     ) -> None:
         """Plot the residual APC coupling jitter noise time series."""
         
-        residual_noise = np.asarray(residual_apc_coupling_jitter_noise[satellite], dtype=float).reshape(-1)
+        residual_noise = np.asarray(residual_apc_coupling_jitter_noise, dtype=float).reshape(-1)
         time_seconds = np.asarray(time_seconds, dtype=float)
 
         if residual_noise.shape[0] != time_seconds.shape[0]:
