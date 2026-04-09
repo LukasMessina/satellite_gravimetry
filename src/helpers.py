@@ -85,6 +85,42 @@ def transform_vector_history_inertial_to_rtn(
     return np.column_stack((radial_component, along_track_component, normal_component))
 
 
+def get_mean_orbital_period(
+    dependent_variables_array: np.ndarray,
+    gravitational_parameter: float,
+) -> tuple[float, float]:
+    """Return the mean orbital periods of GRACE C and GRACE D from saved Keplerian histories."""
+
+    dependent_variables_array = np.asarray(dependent_variables_array, dtype=float)
+
+    if dependent_variables_array.ndim != 2:
+        raise ValueError("dependent_variables_array must be a 2D array.")
+
+    if gravitational_parameter <= 0.0:
+        raise ValueError("gravitational_parameter must be positive.")
+
+    grace_c_keplerian_history = dependent_variables_array[:, 35:41]
+    grace_d_keplerian_history = dependent_variables_array[:, 41:47]
+
+    semi_major_axis_history_grace_c = grace_c_keplerian_history[:, 0]
+    semi_major_axis_history_grace_d = grace_d_keplerian_history[:, 0]
+
+    if np.any(semi_major_axis_history_grace_c <= 0.0) or np.any(semi_major_axis_history_grace_d <= 0.0):
+        raise ValueError("Semi-major axis history must contain strictly positive values.")
+
+    orbital_period_history_grace_c = 2.0 * np.pi * np.sqrt(
+        semi_major_axis_history_grace_c**3 / gravitational_parameter
+    )
+    orbital_period_history_grace_d = 2.0 * np.pi * np.sqrt(
+        semi_major_axis_history_grace_d**3 / gravitational_parameter
+    )
+
+    mean_orbital_period_grace_c = float(np.mean(orbital_period_history_grace_c))
+    mean_orbital_period_grace_d = float(np.mean(orbital_period_history_grace_d))
+
+    return mean_orbital_period_grace_c, mean_orbital_period_grace_d
+
+
 def get_noise_model_version():
     while True:
         try:
@@ -98,3 +134,14 @@ def get_noise_model_version():
                 print("Invalid input. Please enter 1 or 2.")
         except ValueError:
             print("Invalid input. Please enter an integer (1 or 2).")
+
+
+def get_optimal_amplitude_spectral_density_combination(*amplitude_spectral_density_arrays: np.ndarray) -> np.ndarray:
+    """Compute the optimal combination of multiple amplitude spectral density arrays."""
+    if not amplitude_spectral_density_arrays:
+        raise ValueError("At least one amplitude spectral density array must be provided.")
+
+    inverse_power_spectral_densities = [1.0 / (asd_array**2) for asd_array in amplitude_spectral_density_arrays]
+    optimal_asd = 1.0 / np.sqrt(np.sum(inverse_power_spectral_densities, axis=0))
+
+    return optimal_asd

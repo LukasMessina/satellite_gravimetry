@@ -224,7 +224,7 @@ class Plotter:
         ax.set_xlabel("x [m]", fontsize=8)
         ax.set_ylabel("y [m]", fontsize=8)
         ax.set_zlabel("z [m]", fontsize=8)
-        ax.set_title(f"GRACE Cttitude triads - epoch index {epoch_idx}", fontsize=10)
+        ax.set_title(f"GRACE Attitude triads - epoch index {epoch_idx}", fontsize=10)
 
         for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
             formatter = ScalarFormatter(useMathText=True)
@@ -936,6 +936,64 @@ class Plotter:
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
+    def plot_pointing_angle_asd_combination_effect(
+        self,
+        frequencies: np.ndarray,
+        star_camera_assembly_asd_roll: np.ndarray,
+        star_camera_assembly_asd_pitch_yaw: np.ndarray,
+        inertial_measurement_unit_pointing_angle_asd: np.ndarray,
+        combined_asd_roll: np.ndarray,
+        combined_asd_pitch_yaw: np.ndarray,
+        file_name: str,
+    ) -> None:
+        """Plot the star-camera, IMU, and combined pointing-angle ASD models."""
+
+        frequencies = np.asarray(frequencies, dtype=float)
+        if frequencies.ndim != 1:
+            raise ValueError("frequencies must be a 1D array.")
+
+        data = [
+            ("Star Camera Roll Noise", np.asarray(star_camera_assembly_asd_roll, dtype=float), "#073AA0", "-", 2.5),
+            ("Star Camera Pitch/Yaw Noise", np.asarray(star_camera_assembly_asd_pitch_yaw, dtype=float), "#6924D9", "-", 2.5),
+            ("IMU Isotropic Noise", np.asarray(inertial_measurement_unit_pointing_angle_asd, dtype=float), "#2D8525", "-.", 4),
+            ("Combined Roll Noise", np.asarray(combined_asd_roll, dtype=float), "#5CE0C4", "-.", 2.5),
+            ("Combined Pitch/Yaw Noise", np.asarray(combined_asd_pitch_yaw, dtype=float), "#C00ED8", (0, (7, 2)), 2),
+        ]
+
+        fig = plt.figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+
+        for label, asd_values, color, linestyle, linewidth in data:
+            if asd_values.shape != frequencies.shape:
+                raise ValueError(
+                    f"{label} ASD must have the same shape as the frequencies span."
+                )
+
+            ax.loglog(
+                frequencies,
+                asd_values,
+                color=color,
+                linestyle=linestyle,
+                linewidth=linewidth,
+                label=label,
+            )
+
+        ax.set_xlabel("Frequency [Hz]")
+        ax.set_ylabel(r"ASD [rad Hz$^{-1/2}$]")
+        ax.set_xlim(
+            1e-5,
+            1e-1,
+        )
+        ax.set_ylim(
+            1e-8,
+            1e-0,
+        )
+        self._style_axes(ax)
+        ax.legend(loc="best", frameon=True)
+
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
     def plot_relative_position_error_asd(
         self,
         file_name: str,
@@ -1261,6 +1319,50 @@ class Plotter:
         ax.grid(True, which="both", linestyle="--", alpha=0.6)
 
         fig.tight_layout()
+        fig.savefig(self.output_path / file_name, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+    def plot_apc_offset_vector_error_components_time_series(
+        self,
+        error_vector_history: np.ndarray,
+        time_seconds: np.ndarray,
+        satellite_label: str,
+        file_name: str,
+    ) -> None:
+        """Plot the APC offset-vector error components in the satellite frame."""
+
+        error_vector_history = np.asarray(error_vector_history, dtype=float)
+        time_seconds = np.asarray(time_seconds, dtype=float).reshape(-1)
+
+        if error_vector_history.ndim != 2 or error_vector_history.shape[1] != 3:
+            raise ValueError("error_vector_history must be a 2D array with shape (N, 3).")
+        if error_vector_history.shape[0] != time_seconds.shape[0]:
+            raise ValueError(
+                "Time and APC offset-vector error histories must contain the same number of samples."
+            )
+
+        time_hours = (time_seconds - time_seconds[0]) / 3600.0
+        component_labels = ("x", "y", "z")
+        component_colors = ("#5307A0", "#073AA0", "#22CE9D")
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 8), dpi=300, sharex=True)
+
+        for component_idx, (axis, component_label, component_color) in enumerate(
+            zip(axes, component_labels, component_colors)
+        ):
+            axis.plot(
+                time_hours,
+                error_vector_history[:, component_idx],
+                color=component_color,
+                linewidth=1.8,
+            )
+            axis.set_ylabel(rf"$\Delta p_{{{component_label},SF}}$ [m]")
+            axis.set_title(f"{component_label.upper()} component")
+            axis.grid(True, which="both", linestyle="--", alpha=0.6)
+
+        axes[-1].set_xlabel("Propagation time [hours]")
+        fig.suptitle(f"APC Offset-Vector Error Components - {satellite_label}")
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
         fig.savefig(self.output_path / file_name, dpi=300, bbox_inches="tight")
         plt.close(fig)
 

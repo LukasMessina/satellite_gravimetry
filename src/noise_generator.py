@@ -1,7 +1,12 @@
 """ Noise Generator Module """
 
 from typing import List
-from helpers import compute_rtn_basis_history, rtn_basis, transform_vector_history_inertial_to_rtn
+from helpers import (
+    compute_rtn_basis_history,
+    rtn_basis,
+    transform_vector_history_inertial_to_rtn,
+    get_optimal_amplitude_spectral_density_combination,
+)
 from pathlib import Path
 from plotter import Plotter
 
@@ -377,6 +382,16 @@ class NoiseGenerator:
             # Journal of Geophysical Research: Solid Earth, 122(9), 7343–7362.
             # DOI: 10.1002/2017JB014250
             #
+            # Then it is assumed that, as done in GRACE-FO Level-1B Release version 4.0 from JPL,
+            # the pointing angles are reconstructed through an optimal combination of star camera observations and 
+            # Inertial Measurement Unit data. It is assumed that the error spectra are combined optimally. The IMU
+            # selected it Astrix 200 IMU, whose isotropic pointing angle ASD is modeled as described in:
+            #
+            # Encarnação, J., Siemes, C., Daras, I., Carraz, O., Strangfeld, A., Zingerle, P., & Pail, R. (2026).
+            # "A path towards effective exploitation of quantum sensors in future satellite gravity missions".
+            # Advances in Space Research, 77, 4121–4151.
+            # https://doi.org/10.1016/j.asr.2025.12.053
+            #  
             # The resulting noise rotation is then expressed in the LOSF frame by applying the time-varying
             # change-of-basis between RTN and LOSF.
             #
@@ -386,22 +401,48 @@ class NoiseGenerator:
             frequency_interval = [1e-12, 1e-1]  # Hz
             frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
 
-            asd_roll = 1e-5 * np.sqrt(
+            star_camera_assembly_asd_roll = 1e-5 * np.sqrt(
                 ((1e-3 / frequencies_uniform_span) ** 4)
                 / (((1e-5 / frequencies_uniform_span) ** 4) + 1.0)
                 + 1.0
             )
 
-            asd_pitch_yaw = 2e-6 * np.sqrt(
+            star_camera_assembly_asd_pitch_yaw = 2e-6 * np.sqrt(
                 ((1e-2 / frequencies_uniform_span) ** 2)
                 / (((1e-5 / frequencies_uniform_span) ** 2) + 1.0)
                 + 1.0
             )
 
+            inertial_measurement_unit_pointing_angle_asd = (
+                3e-8 * np.sqrt(1 + 4.6e-8 / frequencies_uniform_span**2)
+                ) / (2 * np.pi * frequencies_uniform_span)
+            
+            combined_asd_roll = get_optimal_amplitude_spectral_density_combination(
+                star_camera_assembly_asd_roll,
+                inertial_measurement_unit_pointing_angle_asd
+            )
+
+            combined_asd_pitch_yaw = get_optimal_amplitude_spectral_density_combination(
+                star_camera_assembly_asd_pitch_yaw,
+                inertial_measurement_unit_pointing_angle_asd
+            )
+
+            # NOTE: This plot is generated only for the first satellite, since the noise model is the same.
+            if satellite_label == "GRACE C":
+                plotter.plot_pointing_angle_asd_combination_effect(
+                    frequencies=frequencies_uniform_span,
+                    star_camera_assembly_asd_roll=star_camera_assembly_asd_roll,
+                    star_camera_assembly_asd_pitch_yaw=star_camera_assembly_asd_pitch_yaw,
+                    inertial_measurement_unit_pointing_angle_asd=inertial_measurement_unit_pointing_angle_asd,
+                    combined_asd_roll=combined_asd_roll,
+                    combined_asd_pitch_yaw=combined_asd_pitch_yaw,
+                    file_name=f"rtn_pointing_angles_asd_combination_effect.png",
+                )
+
             analytical_amplitude_spectral_densities = {
-                "roll": asd_roll,               # along-track (T axis)
-                "pitch": asd_pitch_yaw,         # cross-track (N axis)
-                "yaw": asd_pitch_yaw.copy(),    # radial (R axis)
+                "roll": combined_asd_roll,               # along-track (T axis)
+                "pitch": combined_asd_pitch_yaw,         # cross-track (N axis)
+                "yaw": combined_asd_pitch_yaw.copy(),    # radial (R axis)
             }
 
             rtn_euler_angle_histories = {}
@@ -692,7 +733,7 @@ class NoiseGenerator:
             position_data: List[np.ndarray],
             eci_gps_position_noise: dict[str, np.ndarray],
             antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
-            standard_deviation_guessed_antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
+            antenna_phase_center_offset_vector_error_sf: dict[str, np.ndarray],
             bias_value: float,
             plotter: Plotter,
         ) -> np.ndarray:
@@ -758,11 +799,16 @@ class NoiseGenerator:
                 axis=-1,
             )
 
+            real_antenna_phase_center_offset_vector_sf = (
+                antenna_phase_center_offset_vector_sf[satellite]
+                + antenna_phase_center_offset_vector_error_sf[satellite]
+            )
+
             antenna_phase_center_offset_vector_j2000 = np.einsum(
-                "nij,njk,k->ni",
+                "nij,njk,nk->ni",
                 rot_matrices_losf_to_j2000,
                 rot_matrices_sf_to_losf,
-                antenna_phase_center_offset_vector_sf[satellite],
+                real_antenna_phase_center_offset_vector_sf
             )
 
             apc_pointing_jitter_coupling_noise[satellite] = -np.einsum(
@@ -793,7 +839,10 @@ class NoiseGenerator:
                 z_losf,
                 rot_matrices_losf_to_j2000,
                 antenna_phase_center_offset_vector_j2000,
+                real_antenna_phase_center_offset_vector_sf,
             )
+
+        del antenna_phase_center_offset_vector_error_sf
 
         
         # ======================================
@@ -801,12 +850,6 @@ class NoiseGenerator:
         # ======================================
 
         residual_apc_coupling_jitter_noise = dict()
-
-        random_seed = {
-            "GRACE C": 90,
-            "GRACE D": 91,
-        }
-
 
         for satellite in ["GRACE C", "GRACE D"]:
             counterpart_satellite = "GRACE D" if satellite == "GRACE C" else "GRACE C"
@@ -865,21 +908,14 @@ class NoiseGenerator:
                 [x_losf_noisy, y_losf_noisy, z_losf_noisy],
                 axis=-1,
             )
-
-            rng = np.random.default_rng(random_seed[satellite])
-            guessed_antenna_phase_center_offset_vector_sf_errors = rng.normal(
-                0.0,
-                standard_deviation_guessed_antenna_phase_center_offset_vector_sf[satellite],
-                size=(num_epochs, 3),
-            )
             
             guessed_antenna_phase_center_offset_vector_sf = (
                 antenna_phase_center_offset_vector_sf[satellite]
-                + guessed_antenna_phase_center_offset_vector_sf_errors
             )
+
             # Guessed APC offset rotated to J2000
             guessed_antenna_phase_center_offset_vector_j2000 = np.einsum(
-                "nij,njk,nk->ni",
+                "nij,njk,k->ni",
                 rot_matrices_losf_to_j2000_noisy,
                 rot_matrices_sf_to_losf_noisy,
                 guessed_antenna_phase_center_offset_vector_sf,
@@ -919,7 +955,6 @@ class NoiseGenerator:
                 y_losf_noisy,
                 z_losf_noisy,
                 rot_matrices_losf_to_j2000_noisy,
-                guessed_antenna_phase_center_offset_vector_sf_errors,
                 guessed_antenna_phase_center_offset_vector_sf,
                 guessed_antenna_phase_center_offset_vector_j2000,
                 estimated_antenna_offset_correction,
@@ -953,3 +988,101 @@ class NoiseGenerator:
         print("=================================\n")
 
         return total_kbr_range_noise
+
+    @staticmethod
+    def generate_apc_offset_vector_error_history(
+        num_epochs: int,
+        time_step: float,
+        plotter: Plotter,
+        orbital_periods: tuple[float, float],
+        formal_error_antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
+        seed: tuple[int, int],
+        noise_model_version: int,
+        variance_percentage_split: tuple[float, float, float],
+    ) -> dict[str, np.ndarray]:
+        """
+        Generate the true CoM-to-APC vector history in the satellite frame.
+
+        The total stationary variance is constrained to match the formal
+        calibration errors component-wise.
+        """
+
+        apc_offset_vector_error_history = {}
+        time_history = np.arange(num_epochs, dtype=float) * time_step
+        
+        if noise_model_version == 1:
+
+
+            for idx, satellite in enumerate(["GRACE C", "GRACE D"]):
+
+                error_vector_history = np.empty((num_epochs, 3), dtype=float)
+
+                rng = np.random.default_rng(seed[idx])
+
+                sigma_bias = np.sqrt(variance_percentage_split[0]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
+                sigma_white_noise = np.sqrt(1- variance_percentage_split[0]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
+
+                bias_vector = rng.normal(0.0, sigma_bias, size=3)
+                white_noise_vector = rng.normal(0.0, sigma_white_noise, size=(num_epochs, 3))
+
+                error_vector_history = bias_vector + white_noise_vector
+
+                apc_offset_vector_error_history[satellite] = error_vector_history
+                plotter.plot_apc_offset_vector_error_components_time_series(
+                    error_vector_history=error_vector_history,
+                    time_seconds=time_history,
+                    satellite_label=satellite,
+                    file_name=f"{satellite.lower().replace(' ', '_')}_apc_offset_vector_error_components_time_series.png",
+                )
+
+        elif noise_model_version == 2:
+
+            if not np.isclose(variance_percentage_split[0] + variance_percentage_split[1] + variance_percentage_split[2], 1.0):
+                raise ValueError("The sum of the variance contributions must equal 1.0.")
+
+            for idx, satellite in enumerate(["GRACE C", "GRACE D"]):
+
+                rng = np.random.default_rng(seed[idx])
+
+                correlation_time = orbital_periods[idx]
+                transition_factor = np.exp(-time_step / correlation_time)
+                angular_frequency = 2.0 * np.pi / orbital_periods[idx]
+
+                sigma_bias = np.sqrt(variance_percentage_split[0]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
+                sigma_first_order_gauss_markov_process = np.sqrt(variance_percentage_split[1]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
+                amplitude_periodic_component = np.sqrt(2.0 * variance_percentage_split[2]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
+
+                bias_vector = rng.normal(0.0, sigma_bias, size=3)
+                phase_vector = rng.uniform(0.0, 2.0 * np.pi, size=3)
+                gauss_markov_process_state = rng.normal(0.0, sigma_first_order_gauss_markov_process, size=3)
+
+                error_vector_history = np.empty((num_epochs, 3), dtype=float)
+
+                for epoch_idx, epoch_time in enumerate(time_history):
+                    if epoch_idx > 0:
+                        gauss_markov_process_state = (
+                            transition_factor * gauss_markov_process_state
+                            + rng.normal(0.0, sigma_first_order_gauss_markov_process * np.sqrt(1.0 - transition_factor**2), size=3)
+                        )
+
+                    periodic_component = amplitude_periodic_component * np.sin(
+                        angular_frequency * epoch_time + phase_vector
+                    )
+
+                    error_vector_history[epoch_idx, :] = (
+                        bias_vector
+                        + gauss_markov_process_state
+                        + periodic_component
+                    )
+
+                apc_offset_vector_error_history[satellite] = error_vector_history
+                plotter.plot_apc_offset_vector_error_components_time_series(
+                    error_vector_history=error_vector_history,
+                    time_seconds=time_history,
+                    satellite_label=satellite,
+                    file_name=f"{satellite.lower().replace(' ', '_')}_apc_offset_vector_error_components_time_series.png",
+                )
+
+        del error_vector_history
+
+        return apc_offset_vector_error_history

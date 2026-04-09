@@ -23,7 +23,7 @@ from plotter import Plotter
 from noise_generator import NoiseGenerator
 from environment_customizer import EnvironmentCustomizer
 from guidance import Guidance
-from helpers import get_noise_model_version
+from helpers import get_mean_orbital_period, get_noise_model_version
 
 # Load tudatpy modules
 from tudatpy.interface import spice
@@ -48,7 +48,7 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 1, 1, 2, 0, 0).to_epoch() 
+simulation_end_epoch = DateTime(2019, 2, 1, 0, 0, 0).to_epoch() 
 time_step = 5.0  # seconds
 # Add a small epoch buffer so the pointing-angle time series still spans the
 # full simulation window if orbit-phasing maneuvers introduce slight timing offsets.
@@ -734,6 +734,11 @@ dependent_variables_array = restructure_vector_history(
 )
 del stacked_dependent_variable_history
 
+mean_orbital_period_grace_c, mean_orbital_period_grace_d = get_mean_orbital_period(
+    dependent_variables_array,
+    earth_gravitational_parameter,
+)
+
 # =====================================
 # PLOTTING GRACE-FO RELATED DATA
 # =====================================
@@ -791,6 +796,7 @@ plotter.plot_attitude_triads_orientation(
     epoch_idx=100,
     file_name="grace_attitude_triads_epoch_100.png"
 )
+
 
 del dependent_variables_array
 
@@ -914,11 +920,21 @@ antenna_phase_center_offset_vector_sf = {
 }
 
 
-standard_deviation_guessed_antenna_phase_center_offset_vector_sf = {
+formal_error_antenna_phase_center_offset_vector_sf = {
     "GRACE C": np.array([1.2e-3, 64.7e-6, 65.4e-6]),
     "GRACE D": np.array([1.3e-3, 65.9e-6, 71.6e-6])
 }  
 
+antenna_phase_center_offset_vector_error_sf = NoiseGenerator.generate_apc_offset_vector_error_history(
+    num_epochs=states_array.shape[0],
+    time_step=time_step,
+    plotter=plotter,
+    orbital_periods=(mean_orbital_period_grace_c, mean_orbital_period_grace_d),
+    formal_error_antenna_phase_center_offset_vector_sf=formal_error_antenna_phase_center_offset_vector_sf,
+    seed=(200, 201),
+    noise_model_version=noise_model_version,
+    variance_percentage_split=(0.70, 0.20, 0.10),
+)
 
 bias_value = 2e-2  # KBR range bias in meters
 
@@ -929,7 +945,7 @@ kbr_range_noise = NoiseGenerator.generate_kbr_range_noise(
     position_data=grace_fo_position_data,
     eci_gps_position_noise=eci_gps_position_noise,
     antenna_phase_center_offset_vector_sf=antenna_phase_center_offset_vector_sf,
-    standard_deviation_guessed_antenna_phase_center_offset_vector_sf=standard_deviation_guessed_antenna_phase_center_offset_vector_sf,
+    antenna_phase_center_offset_vector_error_sf=antenna_phase_center_offset_vector_error_sf,
     bias_value=bias_value,
     plotter=plotter,
     )
