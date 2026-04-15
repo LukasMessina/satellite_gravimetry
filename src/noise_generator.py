@@ -5,6 +5,7 @@ from helpers import (
     compute_rtn_basis_history,
     rtn_basis,
     transform_vector_history_inertial_to_rtn,
+    transform_vector_history_inertial_to_satellite_frame,
     get_optimal_amplitude_spectral_density_combination,
 )
 from pathlib import Path
@@ -15,12 +16,13 @@ import numpy as np
 from tudatpy import math 
 from pycbc import types, noise, psd
 from scipy.spatial.transform import Rotation
+from findiff import Diff
 
 class NoiseGenerator:
     """Class to generate different types of noise for satellite measurements. """
 
     @staticmethod
-    def generate_gps_position_noise(
+    def generate_gps_noise(
         plotter: Plotter,
         num_epochs: int,
         state_vector: np.ndarray,
@@ -29,8 +31,11 @@ class NoiseGenerator:
         satellite_name: str,
         sigma_rtn: np.ndarray | None = None,
         relative_position_error_asd_json_path: Path | None = None,
-        ) -> np.ndarray:
-        """ Generate GPS position measurement noise in ECI reference frame."""
+        ) -> tuple[np.ndarray, np.ndarray]:
+        """ Generate GPS position and velocity measurement noise in ECI reference frame."""
+
+        time_step = 5.0  # seconds
+        num_samples = num_epochs
 
         if noise_model_version == 1:
 
@@ -101,10 +106,6 @@ class NoiseGenerator:
             # Set the interpolator settings (linear interpolation)
             interpolator_settings = math.interpolators.linear_interpolation()
             interpolator = math.interpolators.create_one_dimensional_scalar_interpolator(data_to_interpolate, interpolator_settings)
-
-            # Define the coarser time grid and relative number of samples
-            time_step = 5.0  # seconds
-            num_samples = num_epochs   
 
             # Initialize position error vectors time histories
             eci_position_errors = np.empty((num_samples, 3))
@@ -193,7 +194,29 @@ class NoiseGenerator:
 
         del rtn_position_errors
 
-        return eci_position_errors
+        # ============================================================= 
+        # Compute velocity errors by differentiating the position errors 
+        # using a fourth accuracy order numerical differentation method.
+        # ============================================================= 
+
+        eci_velocity_errors = np.empty_like(eci_position_errors)
+        metadata = {}
+
+        # first derivative operator along time axis
+        first_derivative_operator = Diff(0, time_step, acc=4)
+
+        # Compute velocity errors for each spatial component
+        for i in range(3):  
+            eci_velocity_errors[:, i] = first_derivative_operator(eci_position_errors[:, i])
+
+        # NOTE: The following variables are for debugging and analysis purposes only.
+        # Capture stencils used at each k (1D shape only)
+        stencil_points = first_derivative_operator.stencil((num_samples,))
+        metadata['stencil_points'] = stencil_points
+        del stencil_points
+        del metadata
+
+        return eci_position_errors, eci_velocity_errors
     
     @staticmethod
     def generate_error_free_pointing_angles(
@@ -736,10 +759,10 @@ class NoiseGenerator:
             antenna_phase_center_offset_vector_error_sf: dict[str, np.ndarray],
             bias_value: float,
             plotter: Plotter,
-        ) -> np.ndarray:
+        ) -> tuple[np.ndarray, np.ndarray]:
         """ 
         Generate KBR range measurement noise using pointing angles noise time series,
-        satellite position data, and systema and oscillator noise timeseries.
+        satellite position data, and system and oscillator noise timeseries.
         """
 
         # ==================================================================
@@ -974,10 +997,14 @@ class NoiseGenerator:
                 f"TimeSeries length mismatch."
             )
 
-        total_kbr_range_noise = (residual_apc_coupling_jitter_noise["GRACE C"] + \
+        total_kbr_range_noise_debiased = (residual_apc_coupling_jitter_noise["GRACE C"] + \
                                 residual_apc_coupling_jitter_noise["GRACE D"] + \
-                                bias + \
                                 np.asarray(kbr_system_and_oscillator_noise_timeseries, dtype=float))
+        
+        total_kbr_range_noise = (residual_apc_coupling_jitter_noise["GRACE C"] + \
+                        residual_apc_coupling_jitter_noise["GRACE D"] + \
+                        bias + \
+                        np.asarray(kbr_system_and_oscillator_noise_timeseries, dtype=float))
 
         print("=================================")
         print(f"Total KBR range noise stats: mean={np.mean(total_kbr_range_noise):.3e} m, std={np.std(total_kbr_range_noise):.3e} m")
@@ -987,102 +1014,313 @@ class NoiseGenerator:
         print(f"  KBR system and oscillator noise: mean={np.mean(kbr_system_and_oscillator_noise_timeseries):.3e} m, std={np.std(kbr_system_and_oscillator_noise_timeseries):.3e} m")
         print("=================================\n")
 
-        return total_kbr_range_noise
+        return total_kbr_range_noise, total_kbr_range_noise_debiased
 
     @staticmethod
     def generate_apc_offset_vector_error_history(
         num_epochs: int,
         time_step: float,
         plotter: Plotter,
-        orbital_periods: tuple[float, float],
         formal_error_antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
         seed: tuple[int, int],
-        noise_model_version: int,
-        variance_percentage_split: tuple[float, float, float],
     ) -> dict[str, np.ndarray]:
-        """
-        Generate the true CoM-to-APC vector history in the satellite frame.
-
-        The total stationary variance is constrained to match the formal
-        calibration errors component-wise.
-        """
+        """ Generate the true CoM-to-APC vector history in the satellite frame. """
 
         apc_offset_vector_error_history = {}
         time_history = np.arange(num_epochs, dtype=float) * time_step
-        
-        if noise_model_version == 1:
 
+        for idx, satellite in enumerate(["GRACE C", "GRACE D"]):
 
-            for idx, satellite in enumerate(["GRACE C", "GRACE D"]):
+            error_vector_history = np.empty((num_epochs, 3), dtype=float)
 
-                error_vector_history = np.empty((num_epochs, 3), dtype=float)
+            rng = np.random.default_rng(seed[idx])
 
-                rng = np.random.default_rng(seed[idx])
+            error_vector_history = rng.normal(0.0, formal_error_antenna_phase_center_offset_vector_sf[satellite], size=(num_epochs, 3))
 
-                sigma_bias = np.sqrt(variance_percentage_split[0]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
-                sigma_white_noise = np.sqrt(1- variance_percentage_split[0]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
-
-                bias_vector = rng.normal(0.0, sigma_bias, size=3)
-                white_noise_vector = rng.normal(0.0, sigma_white_noise, size=(num_epochs, 3))
-
-                error_vector_history = bias_vector + white_noise_vector
-
-                apc_offset_vector_error_history[satellite] = error_vector_history
-                plotter.plot_apc_offset_vector_error_components_time_series(
-                    error_vector_history=error_vector_history,
-                    time_seconds=time_history,
-                    satellite_label=satellite,
-                    file_name=f"{satellite.lower().replace(' ', '_')}_apc_offset_vector_error_components_time_series.png",
-                )
-
-        elif noise_model_version == 2:
-
-            if not np.isclose(variance_percentage_split[0] + variance_percentage_split[1] + variance_percentage_split[2], 1.0):
-                raise ValueError("The sum of the variance contributions must equal 1.0.")
-
-            for idx, satellite in enumerate(["GRACE C", "GRACE D"]):
-
-                rng = np.random.default_rng(seed[idx])
-
-                correlation_time = orbital_periods[idx]
-                transition_factor = np.exp(-time_step / correlation_time)
-                angular_frequency = 2.0 * np.pi / orbital_periods[idx]
-
-                sigma_bias = np.sqrt(variance_percentage_split[0]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
-                sigma_first_order_gauss_markov_process = np.sqrt(variance_percentage_split[1]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
-                amplitude_periodic_component = np.sqrt(2.0 * variance_percentage_split[2]) * formal_error_antenna_phase_center_offset_vector_sf[satellite]
-
-                bias_vector = rng.normal(0.0, sigma_bias, size=3)
-                phase_vector = rng.uniform(0.0, 2.0 * np.pi, size=3)
-                gauss_markov_process_state = rng.normal(0.0, sigma_first_order_gauss_markov_process, size=3)
-
-                error_vector_history = np.empty((num_epochs, 3), dtype=float)
-
-                for epoch_idx, epoch_time in enumerate(time_history):
-                    if epoch_idx > 0:
-                        gauss_markov_process_state = (
-                            transition_factor * gauss_markov_process_state
-                            + rng.normal(0.0, sigma_first_order_gauss_markov_process * np.sqrt(1.0 - transition_factor**2), size=3)
-                        )
-
-                    periodic_component = amplitude_periodic_component * np.sin(
-                        angular_frequency * epoch_time + phase_vector
-                    )
-
-                    error_vector_history[epoch_idx, :] = (
-                        bias_vector
-                        + gauss_markov_process_state
-                        + periodic_component
-                    )
-
-                apc_offset_vector_error_history[satellite] = error_vector_history
-                plotter.plot_apc_offset_vector_error_components_time_series(
-                    error_vector_history=error_vector_history,
-                    time_seconds=time_history,
-                    satellite_label=satellite,
-                    file_name=f"{satellite.lower().replace(' ', '_')}_apc_offset_vector_error_components_time_series.png",
-                )
+            apc_offset_vector_error_history[satellite] = error_vector_history
+            plotter.plot_apc_offset_vector_error_components_time_series(
+                error_vector_history=error_vector_history,
+                time_seconds=time_history,
+                satellite_label=satellite,
+                file_name=f"{satellite.lower().replace(' ', '_')}_apc_offset_vector_error_components_time_series.png",
+            )
 
         del error_vector_history
 
         return apc_offset_vector_error_history
+
+
+    @staticmethod
+    def generate_accelerometer_observations(
+        plotter: Plotter,
+        dependent_variables_array: np.ndarray,
+        time_step: float,
+        accelerometer_scale_factor_matrix_diagonal_elements: dict[str, np.ndarray],
+        accelerometer_biases: dict[str, np.ndarray],
+        seed: tuple[int, int],
+        noise_model_version: int,
+        misalignment_error: float = 0.3e-3,      # radians
+        ) -> dict[str, np.ndarray]:
+        """
+        Generate simulated accelerometer measurements based on the error model
+        presented in:
+
+        Kim, J. (2000). *Simulation study of a low-low satellite-to-satellite tracking mission*
+        (Doctoral dissertation, The University of Texas at Austin).
+
+        This function reproduces an accelerometer observation model by
+        combining the nominal non-gravitational acceleration with relevant instrument
+        error terms, such as scale factor effects, bias, misalignment, and noise.
+        """
+
+        dependent_variables_array = np.asarray(dependent_variables_array, dtype=float)
+
+        satellite_labels = ("GRACE C", "GRACE D")
+        if len(seed) != len(satellite_labels):
+            raise ValueError("One random seed per satellite is required.")
+
+        num_epochs = dependent_variables_array.shape[0]
+
+        non_gravitational_accelerations_j2000 = {
+            # The current propagator stores the non-gravitational accelerations that are
+            # active in the force model: solar radiation pressure and aerodynamic drag.
+            "GRACE C": (
+                dependent_variables_array[:, 3:6]
+                + dependent_variables_array[:, 11:14]
+            ),
+            "GRACE D": (
+                dependent_variables_array[:, 6:9]
+                + dependent_variables_array[:, 14:17]
+            ),
+        }
+
+        rotation_j2000_to_sf = {
+            "GRACE C": dependent_variables_array[:, 17:26],
+            "GRACE D": dependent_variables_array[:, 26:35],
+        }
+
+        del dependent_variables_array
+
+        small_angular_rotation_vector = np.full(3, misalignment_error, dtype=float)
+
+        # Having applied the small angle approximation, the misalignment matrix
+        # is independent of the order of rotations.
+        misalignment_matrix_sf_to_acc = np.array(
+            [
+                [1.0, small_angular_rotation_vector[2], -small_angular_rotation_vector[1]],
+                [-small_angular_rotation_vector[2], 1.0, small_angular_rotation_vector[0]],
+                [small_angular_rotation_vector[1], -small_angular_rotation_vector[0], 1.0],
+            ],
+            dtype=float,
+        )
+
+        delta_f = 1.0 / (num_epochs * time_step)
+        # Create a regular frequency span
+        frequency_interval = [delta_f, 1e-1 + delta_f]  # Hz
+        frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
+
+        if noise_model_version == 1:
+            
+            # Create white noise time series 
+            sensitive_axis_standard_deviation = (1.4 / 3) * 1e-10
+            normal_axis_standard_deviation = (3.8 / 3) * 1e-9
+
+            standard_deviations_accelerometer_frame = (
+                sensitive_axis_standard_deviation, 
+                normal_axis_standard_deviation, 
+                sensitive_axis_standard_deviation,
+            )
+
+            sensitive_axis_asd = np.full_like(frequencies_uniform_span, sensitive_axis_standard_deviation * np.sqrt(2 * time_step))  # [m s**-2 Hz**-1/2]
+            normal_axis_asd = np.full_like(frequencies_uniform_span, normal_axis_standard_deviation * np.sqrt(2 * time_step))        # [m s**-2 Hz**-1/2]
+
+        elif noise_model_version == 2:
+
+            # Kim Table 5.1: sensitive axes use the R/T ASD, while the normal axis uses
+            # the higher less-sensitive ASD. In the current SF convention, y_SF is the normal axis.
+            sensitive_axis_asd = 1e-10 * np.sqrt(1.0 + 0.005 / frequencies_uniform_span)      # [m s**-2 Hz**-1/2]
+            normal_axis_asd = 1e-9 * np.sqrt(1.0 + 0.1 / frequencies_uniform_span)            # [m s**-2 Hz**-1/2]
+
+        plotter.plot_accelerometer_noise_asd(
+            frequencies_uniform_span,
+            sensitive_axis_asd,
+            normal_axis_asd,
+            file_name="accelerometer_random_noise_asd.png",
+        )
+
+        accelerometer_observations_sf = {}
+
+        for satellite_idx, satellite_label in enumerate(satellite_labels):
+            scale_factors_vector = np.asarray(
+                accelerometer_scale_factor_matrix_diagonal_elements[satellite_label],
+                dtype=float,
+            )
+            bias_vector = np.asarray(
+                accelerometer_biases[satellite_label],
+                dtype=float,
+            )
+
+            if scale_factors_vector.shape != (3,) or bias_vector.shape != (3,):
+                raise ValueError(
+                    f"Scale factor matrix diagonal elements and biases for {satellite_label} must have shape (3,)."
+                )
+
+            non_gravitational_accelerations_sf = transform_vector_history_inertial_to_satellite_frame(
+                non_gravitational_accelerations_j2000[satellite_label],
+                rotation_j2000_to_sf[satellite_label],
+            )
+
+            accelerations_accelerometer_frame = np.einsum(
+                "ij,nj->ni",
+                misalignment_matrix_sf_to_acc,
+                non_gravitational_accelerations_sf,
+            )
+
+            scale_factor_matrix = np.diag(scale_factors_vector)
+
+            analytical_asds = (
+                sensitive_axis_asd,
+                normal_axis_asd,
+                sensitive_axis_asd,
+            )
+
+            component_noise_time_series_history = []
+            random_noise_history = np.empty((num_epochs, 3), dtype=float)
+
+            segment_len = int(num_epochs / 8)
+            seg_stride = segment_len // 2
+
+            estimated_frequencies = []
+            estimated_psd_values = []
+            input_frequencies = []
+            input_psd_values = []
+
+            if noise_model_version == 1:
+
+                for component_idx, standard_deviation in enumerate(standard_deviations_accelerometer_frame):
+
+                    rng = np.random.default_rng(seed[satellite_idx] + component_idx)
+                    samples = rng.normal(0, standard_deviation, size=num_epochs)
+
+                    # Transform to TimeSeries
+                    component_noise_time_series = types.timeseries.TimeSeries(
+                        samples,
+                        delta_t=time_step,
+                    )
+                    component_noise_time_series_history.append(component_noise_time_series)
+                    random_noise_history[:, component_idx] = np.asarray(
+                        component_noise_time_series,
+                        dtype=float,
+                    )
+
+            elif noise_model_version == 2:
+
+                for component_idx, component_asd in enumerate(analytical_asds):
+                    analytical_psd = types.frequencyseries.FrequencySeries(
+                        component_asd**2,
+                        delta_f,
+                    )
+                    component_noise_time_series = noise.gaussian.noise_from_psd(
+                        num_epochs,
+                        time_step,
+                        analytical_psd,
+                        seed[satellite_idx] + component_idx,
+                    )
+                    component_noise_time_series_history.append(component_noise_time_series)
+                    random_noise_history[:, component_idx] = np.asarray(
+                        component_noise_time_series,
+                        dtype=float,
+                    )
+
+                for component_time_series, component_asd in zip(
+                    component_noise_time_series_history,
+                    analytical_asds,
+                ):
+                    estimated_psd = psd.welch(
+                        component_time_series,
+                        seg_len=segment_len,
+                        seg_stride=seg_stride,
+                    )
+                    estimated_frequencies.append(estimated_psd.sample_frequencies.numpy())
+                    estimated_psd_values.append(estimated_psd.numpy())
+
+                    analytical_psd = types.frequencyseries.FrequencySeries(
+                        component_asd**2,
+                        delta_f,
+                    )
+                    input_frequencies.append(analytical_psd.sample_frequencies.numpy())
+                    input_psd_values.append(analytical_psd.numpy())
+
+                    plotter.plot_welch_estimated_psd_comparison(
+                        estimated_frequencies,
+                        estimated_psd_values,
+                        input_frequencies,
+                        input_psd_values,
+                        file_name=f"{satellite_label.lower().replace(' ', '_')}_accelerometer_random_noise_welch_estimated_psd_comparison.png",
+                        ordinate_label=r"PSD [m$^2$ s$^{-4}$ Hz$^{-1}$]",
+                        title=f"Accelerometer Random Noise PSD - {satellite_label}",
+                        x_limit_inf=1e-5,
+                        x_limit_sup=1e-1,
+                    )
+
+            plotter.plot_accelerometer_noise_time_series(
+                component_noise_time_series_history,
+                file_name=f"{satellite_label.lower().replace(' ', '_')}_accelerometer_random_noise_time_series.png",
+                suptitle=f"Accelerometer Random Noise Time Series - {satellite_label}",
+            )
+
+            accelerometer_observations_sf[satellite_label] = (
+                np.einsum(
+                "ij,nj->ni",
+                scale_factor_matrix,
+                accelerations_accelerometer_frame,
+                ) 
+                + bias_vector
+                + random_noise_history
+            )
+
+            total_observation_time_series = [
+                types.timeseries.TimeSeries(
+                    accelerometer_observations_sf[satellite_label][:, component_idx],
+                    delta_t=time_step,
+                )
+                for component_idx in range(3)
+            ]
+
+            plotter.plot_accelerometer_noise_time_series(
+                total_observation_time_series,
+                file_name=f"{satellite_label.lower().replace(' ', '_')}_accelerometer_observations_time_series.png",
+                suptitle=f"Total Accelerometer Observations - {satellite_label}",
+            )
+
+
+            # Release per-satellite temporaries once the final observation history
+            # has been stored and the diagnostic plots have been produced.
+            del scale_factors_vector
+            del bias_vector
+            del non_gravitational_accelerations_sf
+            del accelerations_accelerometer_frame
+            del scale_factor_matrix
+            del analytical_asds
+            del component_noise_time_series_history
+            del random_noise_history
+            del segment_len
+            del seg_stride
+            del estimated_frequencies
+            del estimated_psd_values
+            del input_frequencies
+            del input_psd_values
+            del total_observation_time_series
+
+        del non_gravitational_accelerations_j2000
+        del rotation_j2000_to_sf
+        del small_angular_rotation_vector
+        del misalignment_matrix_sf_to_acc
+        del delta_f
+        del frequency_interval
+        del frequencies_uniform_span
+        del sensitive_axis_asd
+        del normal_axis_asd
+        del satellite_labels
+
+        return accelerometer_observations_sf

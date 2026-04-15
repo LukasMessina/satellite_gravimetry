@@ -321,16 +321,16 @@ def main() -> None:
                             )
 
     grace_d_initial_state = element_conversion.keplerian_to_cartesian_elementwise(
-    gravitational_parameter=earth_gravitational_parameter,
-    semi_major_axis=grace_d_initial_orbital_elements.a_km * 1e3,
-    eccentricity=grace_d_initial_orbital_elements.e,
-    inclination=np.radians(grace_d_initial_orbital_elements.i_deg),
-    longitude_of_ascending_node=np.radians(grace_d_initial_orbital_elements.raan_deg),
-    argument_of_periapsis=np.radians(grace_d_initial_orbital_elements.argp_deg),
-    true_anomaly=element_conversion.mean_to_true_anomaly(
-                    mean_anomaly=np.radians(grace_d_initial_orbital_elements.M_deg),
-                    eccentricity=grace_d_initial_orbital_elements.e,
-                ),
+        gravitational_parameter=earth_gravitational_parameter,
+        semi_major_axis=grace_d_initial_orbital_elements.a_km * 1e3,
+        eccentricity=grace_d_initial_orbital_elements.e,
+        inclination=np.radians(grace_d_initial_orbital_elements.i_deg),
+        longitude_of_ascending_node=np.radians(grace_d_initial_orbital_elements.raan_deg),
+        argument_of_periapsis=np.radians(grace_d_initial_orbital_elements.argp_deg),
+        true_anomaly=element_conversion.mean_to_true_anomaly(
+                        mean_anomaly=np.radians(grace_d_initial_orbital_elements.M_deg),
+                        eccentricity=grace_d_initial_orbital_elements.e,
+                    ),
     )
 
 
@@ -363,15 +363,15 @@ def main() -> None:
 
     # Create propagation settings
     propagator_settings = dynamics.propagation_setup.propagator.translational(
-    central_bodies,
-    acceleration_models,
-    bodies_to_propagate,
-    initial_states,
-    simulation_start_epoch,
-    integrator_settings,
-    termination_settings,
-    propagator=propagator_type,
-    output_variables=dependent_variables_to_save,
+        central_bodies,
+        acceleration_models,
+        bodies_to_propagate,
+        initial_states,
+        simulation_start_epoch,
+        integrator_settings,
+        termination_settings,
+        propagator=propagator_type,
+        output_variables=dependent_variables_to_save,
     )
 
     # Create simulation object and propagate the dynamics
@@ -392,7 +392,7 @@ def main() -> None:
     accuracy_orders = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
 
     # Initialize plotter instance
-    plotter = Plotter(output_path=Path("./GRACE-FO/plots"))
+    plotter = Plotter(output_path=Path("./GRACE-FO/plots/finite_difference_method_validation"))
 
     # ====================================================================
     #  Satellite acceleration via numerical differentiation validation

@@ -351,7 +351,16 @@ class Plotter:
             alpha=1.0
         )
 
-    def plot_relative_position(self, time_data, position_data, velocity_data, first_figure_title, first_file_name, second_figure_title, second_file_name):
+    def plot_relative_position(
+            self,
+            time_data,
+            position_data,
+            velocity_data, 
+            first_figure_title, 
+            first_file_name, 
+            second_figure_title, 
+            second_file_name
+            ) -> np.ndarray:
         """
         Plot the relative position components in the RTN frame between the satellites pair over time and
         the 3 dimensional relative position time history in the RTN refernce frame of the chaser satellite.
@@ -375,13 +384,13 @@ class Plotter:
         along_track_distance = np.einsum("ij,ij->i", relative_position, t_hat) / 1e3 # [km]
         radial_distance = np.einsum("ij,ij->i", relative_position, r_hat) / 1e3      # [km]
         cross_track_distance = np.einsum("ij,ij->i", relative_position, h_hat) / 1e3 # [km]
-        relative_position_norm = np.linalg.norm(relative_position, axis=1) / 1e3     # [km]
+        relative_position_norm = np.linalg.norm(relative_position, axis=1)           # [m]
 
         fig = plt.figure(figsize=(7, 4.5), dpi=360)
         plt.plot(t_days, along_track_distance, linewidth=2.5, label="Along-track (T)", color="tab:blue")
         plt.plot(t_days, radial_distance, linewidth=2.5, linestyle="--", label="Radial (R)", color="tab:orange")
         plt.plot(t_days, cross_track_distance, linewidth=2.8, linestyle=":", label="Cross-track (N)", color="tab:green")
-        plt.plot(t_days, relative_position_norm, linewidth=1.5, linestyle="-.", label=r"Range ($\rho$)", color="tab:red")
+        plt.plot(t_days, relative_position_norm / 1e3, linewidth=1.5, linestyle="-.", label=r"Range ($\rho$)", color="tab:red")
 
         plt.title(first_figure_title)
         plt.xlabel("Propagation time [days]")
@@ -457,6 +466,8 @@ class Plotter:
         fig.tight_layout(rect=(0.0, 0.0, 0.92, 1.0))
         fig.savefig(self.output_path / second_file_name, bbox_inches="tight", pad_inches=0.25)
         plt.close(fig)
+
+        return relative_position_norm
 
     def plot_impulsive_delta_v_time_series(
         self,
@@ -890,6 +901,154 @@ class Plotter:
         fig.savefig(self.output_path / f"{file_prefix}.png", bbox_inches="tight")
         plt.close(fig)
 
+    def plot_numerical_derivative_statistics(
+        self,
+        scenario: str,
+        time: np.ndarray,
+        results: dict[int, dict],
+        file_name: str,
+        ylabel: str,
+        title: str,
+        rms_unit_label: str,
+    ) -> None:
+        """Plot finite-difference schemes numerical derivation absolute errors for several accuracy orders."""
+
+        if time.ndim != 1:
+            raise ValueError("Time must be a 1D array.")
+
+        propagation_time = time - time[0]
+
+        fig = plt.figure(figsize=(9.5, 6), dpi=160)
+        ax = fig.add_subplot(111)
+
+        for accuracy in sorted(results.keys()):
+            absolute_error = np.asarray(results[accuracy]["absolute_error"], dtype=float).reshape(-1)
+            error_rms = float(results[accuracy]["error_rms"])
+
+            color = None
+            marker = "o"
+            markersize = 2
+            linestyle = "None"
+
+            ax.plot(
+                propagation_time,
+                absolute_error,
+                color=color,
+                linestyle=linestyle,
+                label=rf"$p={accuracy}\;(\mathrm{{RMS}}={error_rms:.3e}\,{rms_unit_label})$",
+                marker=marker,
+                markersize=markersize,
+            )
+
+        ax.set_title(rf"{scenario} — {title}", pad=10)
+        ax.set_xlabel("Propagation Time [s]")
+        ax.set_ylabel(ylabel)
+        ax.set_yscale("log")
+
+        self._style_axes(ax)
+
+        ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.12),
+            ncol=min(3, len(results)),
+            frameon=True,
+            fontsize=10,
+            handlelength=2.0,
+            columnspacing=1.2,
+        )
+
+        fig.tight_layout()
+        fig.subplots_adjust(bottom=0.10)
+        fig.savefig(self.output_path / file_name, bbox_inches="tight")
+        plt.close(fig)
+
+    def plot_lgd_error_propagation_time_series(
+        self,
+        time: np.ndarray,
+        lgd_error: np.ndarray,
+        file_name: str,
+        title: str = "LGD Error Time Evolution",
+    ) -> None:
+        """Plot the propagated LGD error time series"""
+
+        time = np.asarray(time, dtype=float).reshape(-1)
+        lgd_error = np.asarray(lgd_error, dtype=float).reshape(-1)
+
+        if not (
+            time.shape == lgd_error.shape
+        ):
+            raise ValueError("All LGD error-propagation histories must share the same length.")
+
+        finite_mask = np.isfinite(lgd_error)
+        if not np.any(finite_mask):
+            raise ValueError("At least one finite LGD error sample is required for plotting.")
+
+        time_hours = (time - time[0]) / 3600.0
+
+        lgd_error_rms = float(np.sqrt(np.mean(lgd_error[finite_mask]**2)))
+
+        fig = plt.figure(figsize=(10.0, 6.0), dpi=240)
+        ax = fig.add_subplot(111)
+
+        ax.plot(
+            time_hours,
+            lgd_error,
+            color="#073AA0",
+            linewidth=1.8,
+            label=(
+                r"$\epsilon_{\mathrm{LGD}}$ "
+                rf"($\mathrm{{RMS}}={lgd_error_rms:.3e}\,\mathrm{{m\,s^{{-2}}}}$)"
+            ),
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel("Propagation time [hours]")
+        ax.set_ylabel(r"Acceleration error [m/s$^2$]")
+        self._style_axes(ax)
+        ax.legend(loc="best", frameon=True)
+
+        fig.tight_layout()
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
+    def plot_lgd_error_propagation_asd(
+        self,
+        frequencies: np.ndarray,
+        lgd_error_asd: np.ndarray,
+        file_name: str,
+        title: str = "LGD Error ASD Spectrum",
+        x_limit_inf: float | None = 1e-5,
+        x_limit_sup: float | None = 1e-1,
+    ) -> None:
+        """Plot the ASD of the LGD error."""
+
+        frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
+        lgd_error_asd = np.asarray(lgd_error_asd, dtype=float).reshape(-1)
+
+        fig = plt.figure(figsize=(10.0, 6.0), dpi=240)
+        ax = fig.add_subplot(111)
+
+        ax.loglog(
+            frequencies,
+            lgd_error_asd,
+            color="#073AA0",
+            linewidth=2.0,
+            label=r"$\mathrm{ASD}\!\left(\epsilon_{\mathrm{LGD}}\right)$"
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel("Frequency [Hz]")
+        ax.set_ylabel(r"ASD [m s$^{-2}$ Hz$^{-1/2}$]")
+        self._style_axes(ax)
+        ax.legend(loc="best", frameon=True)
+
+        if x_limit_inf is not None and x_limit_sup is not None:
+            ax.set_xlim(x_limit_inf, x_limit_sup)
+
+        fig.tight_layout()
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
     def _style_axes(self, ax: plt.Axes) -> None:
         ax.minorticks_on()
         ax.spines["left"].set_linewidth(1.2)
@@ -955,7 +1114,7 @@ class Plotter:
         data = [
             ("Star Camera Roll Noise", np.asarray(star_camera_assembly_asd_roll, dtype=float), "#073AA0", "-", 2.5),
             ("Star Camera Pitch/Yaw Noise", np.asarray(star_camera_assembly_asd_pitch_yaw, dtype=float), "#6924D9", "-", 2.5),
-            ("IMU Isotropic Noise", np.asarray(inertial_measurement_unit_pointing_angle_asd, dtype=float), "#2D8525", "-.", 4),
+            ("IMU Isotropic Noise", np.asarray(inertial_measurement_unit_pointing_angle_asd, dtype=float), "#D13532", "-.", 4),
             ("Combined Roll Noise", np.asarray(combined_asd_roll, dtype=float), "#5CE0C4", "-.", 2.5),
             ("Combined Pitch/Yaw Noise", np.asarray(combined_asd_pitch_yaw, dtype=float), "#C00ED8", (0, (7, 2)), 2),
         ]
@@ -1146,8 +1305,29 @@ class Plotter:
         if isinstance(estimated_psd_values, list):
                 estimated_psd_values =  [np.asarray(component_psd_values, dtype=float) for component_psd_values in estimated_psd_values]
 
+        if isinstance(input_frequencies, np.ndarray):
+            if input_frequencies.ndim == 1:
+                input_frequencies = [input_frequencies]
+        if isinstance(input_frequencies, list):
+                input_frequencies = [np.asarray(component_frequencies, dtype=float) for component_frequencies in input_frequencies]
+        if isinstance(input_psd_values, np.ndarray):
+            if input_psd_values.ndim == 1:
+                input_psd_values = [input_psd_values]
+        if isinstance(input_psd_values, list):
+                input_psd_values = [np.asarray(component_psd_values, dtype=float) for component_psd_values in input_psd_values]
+
         if len(estimated_frequencies) != len(estimated_psd_values):
             raise ValueError("Estimated frequency and PSD inputs must contain the same number of components.")
+        if len(input_frequencies) != len(input_psd_values):
+            raise ValueError("Input frequency and PSD inputs must contain the same number of components.")
+
+        if len(input_frequencies) == 1 and len(estimated_frequencies) > 1:
+            input_frequencies = input_frequencies * len(estimated_frequencies)
+            input_psd_values = input_psd_values * len(estimated_psd_values)
+        elif len(input_frequencies) != len(estimated_frequencies):
+            raise ValueError(
+                "Input PSD data must either provide one common spectrum or one spectrum per component."
+            )
 
         if len(estimated_frequencies) > 1:
             component_labels = ("X", "Y", "Z")
@@ -1164,8 +1344,8 @@ class Plotter:
                     linewidth=2,
                 )
                 ax.loglog(
-                    input_frequencies,
-                    input_psd_values,
+                    input_frequencies[component_idx],
+                    input_psd_values[component_idx],
                     color="#073AA0",
                     label="Input PSD",
                     linewidth=1.5,
@@ -1174,6 +1354,7 @@ class Plotter:
                 ax.set_xlabel("Frequency [Hz]")
                 if component_idx == 0:
                     ax.set_ylabel(ordinate_label)
+                self._style_axes(ax)
                 ax.legend(loc="upper right", frameon=True)
 
                 if x_limit_inf is not None and x_limit_sup is not None:
@@ -1194,8 +1375,8 @@ class Plotter:
             linewidth=1.8,
         )
         plt.loglog(
-            input_frequencies,
-            input_psd_values,
+            input_frequencies[0],
+            input_psd_values[0],
             color="#073AA0",
             label='Input PSD',
             linewidth=1.5,
@@ -1209,6 +1390,245 @@ class Plotter:
         if x_limit_inf is not None and x_limit_sup is not None:
             plt.xlim(x_limit_inf, x_limit_sup)
 
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
+    def plot_welch_estimated_asd(
+        self,
+        frequencies: np.ndarray,
+        asd_values: np.ndarray,
+        file_name: str,
+        ordinate_label: str,
+        title: str,
+        line_label: str = "Welch Estimated ASD",
+        x_limit_inf: float | None = None,
+        x_limit_sup: float | None = None,
+    ) -> None:
+        """Plot the Welch-estimated ASD spectrum."""
+
+        frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
+        asd_values = np.asarray(asd_values, dtype=float).reshape(-1)
+
+        fig = plt.figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+
+        ax.loglog(
+            frequencies,
+            asd_values,
+            color="#073AA0",
+            linewidth=2.0,
+            label=line_label,
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel("Frequency [Hz]")
+        ax.set_ylabel(ordinate_label)
+        self._style_axes(ax)
+        ax.legend(loc="best", frameon=True)
+
+        if x_limit_inf is not None and x_limit_sup is not None:
+            ax.set_xlim(x_limit_inf, x_limit_sup)
+
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
+    def plot_welch_estimated_asd_comparison(
+        self,
+        estimated_frequencies: np.ndarray,
+        estimated_asd_values: np.ndarray,
+        reference_frequencies: np.ndarray,
+        reference_asd_values: np.ndarray,
+        file_name: str,
+        ordinate_label: str,
+        title: str,
+        estimated_label: str = "Welch Estimated ASD",
+        reference_label: str = "Analytical ASD",
+        x_limit_inf: float | None = None,
+        x_limit_sup: float | None = None,
+    ) -> None:
+        """Plot a Welch-estimated ASD against a reference ASD curve."""
+
+        estimated_frequencies = np.asarray(estimated_frequencies, dtype=float).reshape(-1)
+        estimated_asd_values = np.asarray(estimated_asd_values, dtype=float).reshape(-1)
+        reference_frequencies = np.asarray(reference_frequencies, dtype=float).reshape(-1)
+        reference_asd_values = np.asarray(reference_asd_values, dtype=float).reshape(-1)
+
+        fig = plt.figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+
+        ax.loglog(
+            estimated_frequencies,
+            estimated_asd_values,
+            color="#D8660E",
+            linewidth=2.0,
+            label=estimated_label,
+        )
+        ax.loglog(
+            reference_frequencies,
+            reference_asd_values,
+            color="#073AA0",
+            linewidth=1.6,
+            linestyle="--",
+            label=reference_label,
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel("Frequency [Hz]")
+        ax.set_ylabel(ordinate_label)
+        self._style_axes(ax)
+        ax.legend(loc="best", frameon=True)
+
+        if x_limit_inf is not None and x_limit_sup is not None:
+            ax.set_xlim(x_limit_inf, x_limit_sup)
+
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
+    def plot_spectral_sensitivity_analysis_results(
+        self,
+        spectral_sensitivity_analysis: list[dict[str, float]],
+        file_name: str,
+        title: str,
+        colorbar_label: str,
+    ) -> None:
+        """Plot the Welch parameter sweep used to fit numerical and analytical spectra."""
+
+        if not spectral_sensitivity_analysis:
+            raise ValueError("At least one spectral sensitivity analysis record is required.")
+
+        segment_lengths = np.array([record["segment_length"] for record in spectral_sensitivity_analysis], dtype=float)
+        segment_strides = np.array([record["segment_stride"] for record in spectral_sensitivity_analysis], dtype=float)
+        log_rms_misfits = np.array([record["log_rms_misfit"] for record in spectral_sensitivity_analysis], dtype=float)
+
+        best_index = int(np.argmin(log_rms_misfits))
+
+        fig = plt.figure(figsize=(9.0, 6.0), dpi=220)
+        ax = fig.add_subplot(111)
+
+        scatter = ax.scatter(
+            segment_lengths,
+            segment_strides,
+            c=log_rms_misfits,
+            cmap="viridis",
+            s=10,
+            edgecolors="none",
+            linewidths=0,
+        )
+
+        ax.scatter(
+            segment_lengths[best_index],
+            segment_strides[best_index],
+            color="#D80E29",
+            s=80,
+            marker="X",
+            edgecolors="none",
+            linewidths=0,
+            label="Best fit",
+            zorder=3,
+        )
+
+        ax.set_title(title)
+        ax.set_xlabel("Segment Length [samples]")
+        ax.set_ylabel("Segment Stride [samples]")
+        self._style_axes(ax)
+        ax.legend(loc="best", frameon=True)
+
+        colorbar = fig.colorbar(scatter, ax=ax)
+        colorbar.set_label(colorbar_label)
+
+        fig.tight_layout()
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
+    def plot_accelerometer_noise_asd(
+        self,
+        frequencies: np.ndarray,
+        sensitive_axis_asd: np.ndarray,
+        normal_axis_asd: np.ndarray,
+        file_name: str,
+    ) -> None:
+        """Plot the sensitive-axis and normal-axis accelerometer ASD models."""
+
+        frequencies = np.asarray(frequencies, dtype=float)
+        sensitive_axis_asd = np.asarray(sensitive_axis_asd, dtype=float)
+        normal_axis_asd = np.asarray(normal_axis_asd, dtype=float)
+
+        if frequencies.ndim != 1:
+            raise ValueError("frequencies must be a 1D array.")
+        if sensitive_axis_asd.shape != frequencies.shape or normal_axis_asd.shape != frequencies.shape:
+            raise ValueError("Accelerometer ASD arrays must match the frequency span.")
+
+        fig = plt.figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+
+        ax.loglog(
+            frequencies,
+            sensitive_axis_asd,
+            color="#073AA0",
+            linewidth=2.5,
+            label=r"$X_{\mathrm{ACC}},\ Z_{\mathrm{ACC}}$",
+        )
+        ax.loglog(
+            frequencies,
+            normal_axis_asd,
+            color="#0BBC46",
+            linewidth=2.5,
+            linestyle="--",
+            label=r"$Y_{\mathrm{ACC}}$",
+        )
+
+        ax.set_title("Accelerometer Random Noise ASD")
+        ax.set_xlabel("Frequency [Hz]")
+        ax.set_ylabel(r"ASD [m s$^{-2}$ Hz$^{-1/2}$]")
+        ax.set_xlim(1e-5, 1e-1)
+        self._style_axes(ax)
+        ax.legend(loc="best", frameon=True)
+
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
+    def plot_accelerometer_noise_time_series(
+        self,
+        component_noise_time_series: list,
+        file_name: str,
+        suptitle: str,
+        window_length_samples: int | None = 4320,
+    ) -> None:
+        """Plot the accelerometer noise time history for a single satellite."""
+
+        if len(component_noise_time_series) != 3:
+            raise ValueError("Exactly three component noise time series are required.")
+
+        component_labels = ("X", "Y", "Z")
+        colors = ("#073AA0", "#073AA0", "#073AA0")
+
+        fig, axes = plt.subplots(3, 1, figsize=(10, 9), dpi=300, sharex=True)
+        axes = np.atleast_1d(axes)
+
+        for component_idx, (ax, component_label, component_color, component_series) in enumerate(
+            zip(axes, component_labels, colors, component_noise_time_series)
+        ):
+
+            if window_length_samples is not None:
+                n_samples = int(window_length_samples)
+                series = component_series[:n_samples]
+            else:
+                series = component_series
+            
+            ax.plot(
+                series.sample_times,
+                series,
+                color=component_color,
+                linewidth=1.6,
+            )
+            ax.set_title(f"{component_label} Component")
+            ax.set_ylabel(r"Noise [m s$^{-2}$]")
+            self._style_axes(ax)
+            if component_idx == len(component_noise_time_series) - 1:
+                ax.set_xlabel("Time [s]")
+
+        fig.suptitle(suptitle, y=0.98)
+        fig.tight_layout()
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
@@ -1343,7 +1763,7 @@ class Plotter:
 
         time_hours = (time_seconds - time_seconds[0]) / 3600.0
         component_labels = ("x", "y", "z")
-        component_colors = ("#5307A0", "#073AA0", "#22CE9D")
+        component_colors = ("#073AA0", "#073AA0", "#073AA0")
 
         fig, axes = plt.subplots(3, 1, figsize=(10, 8), dpi=300, sharex=True)
 
@@ -1361,7 +1781,7 @@ class Plotter:
             axis.grid(True, which="both", linestyle="--", alpha=0.6)
 
         axes[-1].set_xlabel("Propagation time [hours]")
-        fig.suptitle(f"APC Offset-Vector Error Components - {satellite_label}")
+        fig.suptitle(f"APC Offset-Vector Error Components - {satellite_label}", y=0.95)
         fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
         fig.savefig(self.output_path / file_name, dpi=300, bbox_inches="tight")
         plt.close(fig)

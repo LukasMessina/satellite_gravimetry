@@ -11,7 +11,7 @@ class EnvironmentCustomizer:
     def create_custom_spacecraft_rotation_function(
         spacecraft_name: str,
         counterpart_name: str,
-        attitude_noise_history: dict[str, np.ndarray],
+        error_free_attitude_history: dict[str, np.ndarray],
         sample_times: np.ndarray,
         rotation_model_context: dict[str, environment.SystemOfBodies],
     ):
@@ -19,9 +19,9 @@ class EnvironmentCustomizer:
         Create satellite frame to J2000 Earth centered reference frame rotation callback
          from Line-of-Sight reference frame to satellite frame noise angles."""
 
-        yaw_history = np.asarray(attitude_noise_history["yaw"], dtype=float)
-        pitch_history = np.asarray(attitude_noise_history["pitch"], dtype=float)
-        roll_history = np.asarray(attitude_noise_history["roll"], dtype=float)
+        yaw_history = np.asarray(error_free_attitude_history["yaw"], dtype=float)
+        pitch_history = np.asarray(error_free_attitude_history["pitch"], dtype=float)
+        roll_history = np.asarray(error_free_attitude_history["roll"], dtype=float)
 
         def custom_rotation_matrix_function(current_time: float) -> np.ndarray:
 
