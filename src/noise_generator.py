@@ -233,11 +233,24 @@ class NoiseGenerator:
 
         json_paths =[pitch_history_json_path, yaw_history_json_path, roll_history_json_path]
         file_prefixes = ['pitch', 'yaw', 'roll']
+        error_free_angles_labels = [r"$\theta_y$ [rad]", r"$\theta_z$ [rad]", r"$\theta_x$ [rad]"]
+        asd_spectrum_error_free_angles_labels = [
+            rf"$\mathrm{{ASD}}_{{\theta,y}}\ [\mathrm{{rad}}\ \mathrm{{Hz}}^{{-1/2}}]$",
+            rf"$\mathrm{{ASD}}_{{\theta,z}}\ [\mathrm{{rad}}\ \mathrm{{Hz}}^{{-1/2}}]$",
+            rf"$\mathrm{{ASD}}_{{\theta,x}}\ [\mathrm{{rad}}\ \mathrm{{Hz}}^{{-1/2}}]$",
+        ]
+        psd_spectrum_error_free_angles_labels = [
+            rf"$\mathrm{{PSD}}_{{\theta,y}}\ [\mathrm{{rad}}^2\ \mathrm{{Hz}}^{{-1}}]$",
+            rf"$\mathrm{{PSD}}_{{\theta,z}}\ [\mathrm{{rad}}^2\ \mathrm{{Hz}}^{{-1}}]$",
+            rf"$\mathrm{{PSD}}_{{\theta,x}}\ [\mathrm{{rad}}^2\ \mathrm{{Hz}}^{{-1}}]$",
+        ]
+
+        
         error_free_pointing_angles_time_series = {}
         seed_variation = 0
 
         # Load the ASD data from the uploaded JSON file
-        for path, file_prefix in zip(json_paths, file_prefixes):
+        for idx, (path, file_prefix) in enumerate(zip(json_paths, file_prefixes)):
             
             with open(path, 'r') as file:
                 asd_data = json.load(file)
@@ -292,13 +305,15 @@ class NoiseGenerator:
                     asd_values,
                     frequencies_uniform_span,
                     asd_interpolated,
-                    file_name=f"{satellite_label}_error_free_{file_prefix}_asd_interpolation_comparison.png"
+                    file_name=f"{satellite_label}_error_free_{file_prefix}_asd_interpolation_comparison.png",
+                    ordinate_label=asd_spectrum_error_free_angles_labels[idx]
                 )
 
                 # Plot noise time series and basic stats
                 plotter.plot_angle_noise_time_series(
                     angle_time_series,
                     file_name=f"{satellite_label}_error_free_{file_prefix}_time_series.png",
+                    ordinate_label = error_free_angles_labels[idx],
                 )
 
                 plotter.plot_welch_estimated_psd_comparison(
@@ -307,6 +322,7 @@ class NoiseGenerator:
                     input_frequencies,
                     input_psd_values,
                     file_name=f"{satellite_label}_error_free_{file_prefix}_welch_estimated_psd_comparison.png",
+                    ordinate_label=psd_spectrum_error_free_angles_labels[idx]
                 )
             
         return error_free_pointing_angles_time_series
@@ -337,6 +353,27 @@ class NoiseGenerator:
         """
 
         pointing_angles = ["pitch", "yaw", "roll"]
+        angles_noise_labels = [
+            r"$\delta\theta_{x}\ [\mathrm{rad}]$",
+            r"$\delta\theta_{y}\ [\mathrm{rad}]$",
+            r"$\delta\theta_{z}\ [\mathrm{rad}]$",
+        ]
+        angles_with_error_labels = [
+            r"$\tilde{\theta}_y$ [rad]",
+            r"$\tilde{\theta}_z$ [rad]",
+            r"$\tilde{\theta}_x$ [rad]"
+        ]
+        asd_spectrum_angles_noise_labels = [
+            rf"$\mathrm{{ASD}}_{{\delta\theta,x}}\ [\mathrm{{rad}}\ \mathrm{{Hz}}^{{-1/2}}]$",
+            rf"$\mathrm{{ASD}}_{{\delta\theta,y}}\ [\mathrm{{rad}}\ \mathrm{{Hz}}^{{-1/2}}]$",
+            rf"$\mathrm{{ASD}}_{{\delta\theta,z}}\ [\mathrm{{rad}}\ \mathrm{{Hz}}^{{-1/2}}]$",
+        ]
+        psd_spectrum_angles_noise_labels = [
+            rf"$\mathrm{{PSD}}_{{\delta\theta,x}}\ [\mathrm{{rad}}^2\ \mathrm{{Hz}}^{{-1}}]$",
+            rf"$\mathrm{{PSD}}_{{\delta\theta,y}}\ [\mathrm{{rad}}^2\ \mathrm{{Hz}}^{{-1}}]$",
+            rf"$\mathrm{{PSD}}_{{\delta\theta,z}}\ [\mathrm{{rad}}^2\ \mathrm{{Hz}}^{{-1}}]$",
+        ]
+
         noisy_attitude_time_series = {}
 
         time_step = 5.0  # seconds
@@ -421,7 +458,7 @@ class NoiseGenerator:
             # Finally, equivalent LOSF roll, pitch, and yaw angles are extracted from the resulting rotation matrix
             # and added to the nominal pointing angles following the Darbeheshti measurement model.
 
-            frequency_interval = [1e-12, 1e-1]  # Hz
+            frequency_interval = [1e-12, 1e-1 + 10 * delta_f]  # Hz
             frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
 
             star_camera_assembly_asd_roll = 1e-5 * np.sqrt(
@@ -470,7 +507,7 @@ class NoiseGenerator:
 
             rtn_euler_angle_histories = {}
 
-            for angle, asd_values in analytical_amplitude_spectral_densities.items():
+            for idx, (angle, asd_values) in enumerate(analytical_amplitude_spectral_densities.items()):
                 analytical_psd = types.frequencyseries.FrequencySeries(asd_values**2, delta_f)
 
                 noise_time_series = noise.gaussian.noise_from_psd(
@@ -505,12 +542,13 @@ class NoiseGenerator:
                         frequencies_uniform_span,
                         asd_values,
                         file_name=f"{satellite_label}_rtn_{angle}_noise_asd_comparison.png",
-                        ordinate_label=r"ASD [rad Hz$^{-1/2}$]",
+                        ordinate_label=asd_spectrum_angles_noise_labels[idx],
                     )
 
                     plotter.plot_angle_noise_time_series(
                         noise_time_series,
                         file_name=f"{satellite_label}_rtn_{angle}_noise_time_series.png",
+                        ordinate_label=angles_noise_labels[idx],
                     )
 
                     plotter.plot_welch_estimated_psd_comparison(
@@ -519,7 +557,7 @@ class NoiseGenerator:
                         input_frequencies,
                         input_psd_values,
                         file_name=f"{satellite_label}_rtn_{angle}_noise_welch_estimated_psd_comparison.png",
-                        ordinate_label=r"PSD [rad$^2$ Hz$^{-1}$]",
+                        ordinate_label=psd_spectrum_angles_noise_labels[idx],
                         title=f"{angle.capitalize()} Noise PSD",
                     )
 
@@ -601,10 +639,12 @@ class NoiseGenerator:
             }
 
             if generate_plots:
-                for angle, noise_time_series in pointing_angles_noise_time_series.items():
+                angles_noise_labels = [angles_noise_labels[2], angles_noise_labels[1], angles_noise_labels[0]]
+                for idx, (angle, noise_time_series) in enumerate(pointing_angles_noise_time_series.items()):
                     plotter.plot_angle_noise_time_series(
                         noise_time_series,
                         file_name=f"{satellite_label}_losf_{angle}_noise_time_series.png",
+                        ordinate_label=angles_noise_labels[idx],
                     )
 
             del (
@@ -635,7 +675,7 @@ class NoiseGenerator:
         # NOISY ATTITUDE TIME SERIES GENERATION
         # =====================================
 
-        for angle in pointing_angles:
+        for idx, angle in enumerate(pointing_angles):
 
             noise_time_series = pointing_angles_noise_time_series[angle]
             error_free_pointing_angle_time_series = error_free_pointing_angles_time_series[angle]
@@ -656,6 +696,7 @@ class NoiseGenerator:
                 plotter.plot_angle_noise_time_series(
                     noisy_attitude_time_series[angle],
                     file_name=f"{satellite_label}_total_noisy_{angle}_angle_time_series.png",
+                    ordinate_label=angles_with_error_labels[idx],
                 )
 
         return noisy_attitude_time_series
@@ -694,7 +735,7 @@ class NoiseGenerator:
         else:
 
             # Create a regular frequency span
-            frequency_interval = [delta_f, 1e-1 + delta_f]  # Hz
+            frequency_interval = [delta_f, 1e-1 + 10 * delta_f]  # Hz
             frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
             analytical_asd = 1e-6 * np.sqrt(1 + (0.0018 / frequencies_uniform_span)**4)  # [m Hz^-1/2]
             analytical_psd = (1e-6 * np.sqrt(1 + (0.0018 / frequencies_uniform_span)**4))**2  # [m^2 Hz^-1]
@@ -1116,7 +1157,7 @@ class NoiseGenerator:
 
         delta_f = 1.0 / (num_epochs * time_step)
         # Create a regular frequency span
-        frequency_interval = [delta_f, 1e-1 + delta_f]  # Hz
+        frequency_interval = [delta_f, 1e-1 + 10 * delta_f]  # Hz
         frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
 
         if noise_model_version == 1:

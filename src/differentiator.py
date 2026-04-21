@@ -9,6 +9,9 @@ from scipy.spatial.transform import Rotation
 
 from plotter import Plotter
 
+# Define constants
+LOWEST_FREQUENCY_RESOLUTION_HZ = 0.5e-3
+
 
 def compute_acceleration(
         position: np.ndarray,
@@ -103,6 +106,87 @@ def get_contiguous_valid_propagation_segments(valid_propagation_segments_mask: n
     return [np.asarray(propagation_segment, dtype=int) for propagation_segment in np.split(valid_indices, split_indices)]
 
 
+def get_segment_length_from_frequency_resolution(
+    time_step: float,
+    lowest_frequency_resolution_hz: float,
+) -> tuple[int, float]:
+    """Convert a target Welch estimated PSD lowest-frequency resolution into a segment length in samples."""
+
+    if time_step <= 0.0:
+        raise ValueError("time_step must be positive.")
+    if lowest_frequency_resolution_hz <= 0.0:
+        raise ValueError("lowest_frequency_resolution_hz must be positive.")
+
+    requested_segment_duration_seconds = 1.0 / lowest_frequency_resolution_hz
+    raw_segment_length = requested_segment_duration_seconds / time_step
+    segment_length = int(np.rint(raw_segment_length))
+
+    if segment_length < 1:
+        raise ValueError("The requested segment length is shorter than one sample.")
+
+    return segment_length, requested_segment_duration_seconds
+
+
+def build_welch_estimation_segment_settings(
+    valid_propagation_segments_mask: np.ndarray,
+    time_step: float,
+    segment_length: int,
+    segment_stride: int,
+    *,
+    emit_warnings: bool = False,
+    warning_context: str = "Welch estimation",
+) -> list[dict[str, Any]]:
+    """Return the propagation arcs that can support the requested Welch segment length."""
+
+    if segment_length < 1:
+        raise ValueError("segment_length must be at least one sample.")
+    if segment_stride < 1:
+        raise ValueError("segment_stride must be at least one sample.")
+
+    requested_segment_duration_seconds = segment_length * time_step
+    lowest_frequency_resolution_hz = 1.0 / requested_segment_duration_seconds
+    welch_segment_settings: list[dict[str, Any]] = []
+
+    for arc_idx, propagation_arc in enumerate(
+        get_contiguous_valid_propagation_segments(valid_propagation_segments_mask),
+        start=1,
+    ):
+        propagation_arc_length = int(propagation_arc.size)
+        propagation_arc_duration_seconds = propagation_arc_length * time_step
+
+        if propagation_arc_length < segment_length:
+            if emit_warnings:
+                attainable_lowest_frequency_resolution_hz = 1.0 / propagation_arc_duration_seconds
+                start_index = int(propagation_arc[0])
+                end_index = int(propagation_arc[-1])
+                print(
+                    "\nWARNING: "
+                    f"{warning_context} will skip propagation segment {arc_idx} "
+                    f"(sample indices {start_index}-{end_index}, {propagation_arc_length} samples, "
+                    f"{propagation_arc_duration_seconds:.1f} s) because it is shorter than the required "
+                    f"Welch segment duration of {requested_segment_duration_seconds:.1f} s "
+                    f"({segment_length} samples at dt={time_step:.1f} s, "
+                    f"lowest frequency resolution={lowest_frequency_resolution_hz:.6e} Hz). "
+                    f"This propagation segment can support at most {propagation_arc_duration_seconds:.1f} s, "
+                    f"which corresponds to an attainable lowest frequency resolution of "
+                    f"{attainable_lowest_frequency_resolution_hz:.6e} Hz.\n"
+                )
+            continue
+
+        welch_segment_settings.append(
+            {
+                "arc_idx": arc_idx,
+                "propagation_arc": propagation_arc,
+                "segment_length": segment_length,
+                "segment_stride": segment_stride,
+                "segment_duration_seconds": requested_segment_duration_seconds,
+                "lowest_frequency_resolution_hz": lowest_frequency_resolution_hz,
+            }
+        )
+
+    return welch_segment_settings
+
+
 def apply_orbital_phasing_period_exclusion_mask(
     values: np.ndarray,
     exclusion_mask: np.ndarray,
@@ -121,26 +205,45 @@ def apply_orbital_phasing_period_exclusion_mask(
 
 def get_welch_segment_settings_from_propagation_segments(
     valid_propagation_segments_mask: np.ndarray,
-    segment_length_divisor: int = 31,
-) -> tuple[int, int]:
-    """Return Welch settings that fit inside every eligible contiguous valid propagation segment."""
+    time_step: float,
+    target_lowest_frequency_resolution_hz: float = LOWEST_FREQUENCY_RESOLUTION_HZ,
+    warning_context: str = "Welch estimation",
+) -> list[dict[str, Any]]:
+    """Return per-arc Welch settings for the requested lowest-frequency resolution."""
 
-    valid_propagation_segments = get_contiguous_valid_propagation_segments(valid_propagation_segments_mask)
-    propagation_segment_lengths = [propagation_segment.size for propagation_segment in valid_propagation_segments]
-
-    reference_segment_length = min(propagation_segment_lengths)
-    segment_length = reference_segment_length // segment_length_divisor
+    segment_length, requested_segment_duration_seconds = get_segment_length_from_frequency_resolution(
+        time_step=time_step,
+        lowest_frequency_resolution_hz=target_lowest_frequency_resolution_hz,
+    )
     segment_stride = segment_length // 2
+    welch_segment_settings = build_welch_estimation_segment_settings(
+        valid_propagation_segments_mask=valid_propagation_segments_mask,
+        time_step=time_step,
+        segment_length=segment_length,
+        segment_stride=segment_stride,
+        emit_warnings=True,
+        warning_context=warning_context,
+    )
 
-    return segment_length, segment_stride
+    if not welch_segment_settings:
+        raise ValueError(
+            "No valid propagation segment is long enough for the requested Welch estimation settings: "
+            f"T_segment={requested_segment_duration_seconds:.1f} s, "
+            f"lowest_frequency_resolution={target_lowest_frequency_resolution_hz:.6e} Hz."
+        )
+
+    return welch_segment_settings
 
 
 def compute_weighted_average_psd_across_segments(
     values: np.ndarray,
     valid_propagation_segments_mask: np.ndarray,
     time_step: float,
-    segment_length: int,
-    segment_stride: int,
+    segment_length: int | None = None,
+    segment_stride: int | None = None,
+    welch_segment_settings: list[dict[str, Any]] | None = None,
+    emit_warnings: bool = False,
+    warning_context: str = "Welch estimation",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate Welch PSDs segment by segment and average them with weights derived by proportion of samples in each segment."""
 
@@ -150,38 +253,60 @@ def compute_weighted_average_psd_across_segments(
     if values.shape != valid_propagation_segments_mask.shape:
         raise ValueError("values and valid_propagation_segments_mask must have the same shape.")
 
+    if welch_segment_settings is None:
+        if segment_length is None or segment_stride is None:
+            raise ValueError(
+                "Either welch_segment_settings must be provided, or both segment_length and segment_stride must be set."
+            )
+        welch_segment_settings = build_welch_estimation_segment_settings(
+            valid_propagation_segments_mask=valid_propagation_segments_mask,
+            time_step=time_step,
+            segment_length=segment_length,
+            segment_stride=segment_stride,
+            emit_warnings=emit_warnings,
+            warning_context=warning_context,
+        )
+    elif segment_length is not None or segment_stride is not None:
+        raise ValueError("Provide either welch_segment_settings or segment_length/segment_stride, not both.")
+
     weighted_psd_sum = None
     frequency_grid = None
     total_weight = 0.0
 
-    for propagation_segment in get_contiguous_valid_propagation_segments(valid_propagation_segments_mask):
+    for welch_segment_setting in welch_segment_settings:
+        propagation_arc = np.asarray(welch_segment_setting["propagation_arc"], dtype=int)
+        segment_length = int(welch_segment_setting["segment_length"])
+        segment_stride = int(welch_segment_setting["segment_stride"])
 
-        propagation_segment_time_series = types.timeseries.TimeSeries(
-            values[propagation_segment],
+        propagation_arc_time_series = types.timeseries.TimeSeries(
+            values[propagation_arc],
             delta_t=time_step,
         )
         estimated_psd = psd.welch(
-            propagation_segment_time_series,
+            propagation_arc_time_series,
             seg_len=segment_length,
             seg_stride=segment_stride,
         )
 
-        propagation_segment_frequencies = estimated_psd.sample_frequencies.numpy()
-        propagation_segment_psd_values = estimated_psd.numpy()
-        propagation_segment_weight = float(propagation_segment.size)
+        propagation_arc_frequencies = estimated_psd.sample_frequencies.numpy()
+        propagation_arc_psd_values = estimated_psd.numpy()
+        propagation_arc_weight = float(propagation_arc.size)
 
         if frequency_grid is None:
-            frequency_grid = propagation_segment_frequencies
-            weighted_psd_sum = propagation_segment_weight * propagation_segment_psd_values
+            frequency_grid = propagation_arc_frequencies
+            weighted_psd_sum = propagation_arc_weight * propagation_arc_psd_values
         else:
-            if not np.allclose(frequency_grid, propagation_segment_frequencies):
-                raise RuntimeError("Welch estimated PSDs frequency grids differ across propagation segments.")
-            weighted_psd_sum += propagation_segment_weight * propagation_segment_psd_values
+            if not np.allclose(frequency_grid, propagation_arc_frequencies):
+                raise RuntimeError(
+                    "Welch estimated PSDs frequency grids differ across propagation arcs. "
+                    "Ensure the selected propagation arcs share the same segment duration."
+                )
+            weighted_psd_sum += propagation_arc_weight * propagation_arc_psd_values
 
-        total_weight += propagation_segment_weight
+        total_weight += propagation_arc_weight
 
     if frequency_grid is None or weighted_psd_sum is None or total_weight == 0.0:
-        raise ValueError("No valid propagation segment is long enough for the requested Welch settings.")
+        raise ValueError("No valid propagation arc is long enough for the requested Welch settings.")
 
     return frequency_grid, weighted_psd_sum / total_weight
 
@@ -277,13 +402,28 @@ def run_psd_estimation_parameter_sensitivity_analysis(
             "range_noise_debiased, differentiated_range_noise, and valid_propagation_segments_mask must have the same shape."
         )
 
-    shortest_valid_segment_length = min(
-        propagation_segment.size
-        for propagation_segment in get_contiguous_valid_propagation_segments(valid_propagation_segments_mask)
+    valid_propagation_segments = get_contiguous_valid_propagation_segments(valid_propagation_segments_mask)
+    if not valid_propagation_segments:
+        raise ValueError("At least one valid propagation segment is required for the PSD sensitivity analysis.")
+
+    minimum_segment_length_from_resolution, _ = get_segment_length_from_frequency_resolution(
+        time_step=time_step,
+        lowest_frequency_resolution_hz=LOWEST_FREQUENCY_RESOLUTION_HZ,
     )
-    min_segment_length = shortest_valid_segment_length // 31
-    max_segment_length = shortest_valid_segment_length 
-    starting_segment_length = shortest_valid_segment_length // 8
+    longest_valid_segment_length = max(
+        propagation_segment.size
+        for propagation_segment in valid_propagation_segments
+    )
+    if longest_valid_segment_length < minimum_segment_length_from_resolution:
+        raise ValueError(
+            "No valid propagation segment is long enough to support the minimum Welch segment duration "
+            f"required by the target lowest frequency resolution of "
+            f"{LOWEST_FREQUENCY_RESOLUTION_HZ:.6e} Hz."
+        )
+
+    min_segment_length = minimum_segment_length_from_resolution
+    max_segment_length = longest_valid_segment_length
+    starting_segment_length = min_segment_length
     starting_segment_stride = starting_segment_length // 2
 
     rng = np.random.default_rng(seed)
@@ -298,13 +438,19 @@ def run_psd_estimation_parameter_sensitivity_analysis(
     best_candidate: dict[str, Any] | None = None
 
     for segment_length, segment_stride in sorted(candidate_parameters_pairs):
+        candidate_welch_segment_settings = build_welch_estimation_segment_settings(
+            valid_propagation_segments_mask=valid_propagation_segments_mask,
+            time_step=time_step,
+            segment_length=segment_length,
+            segment_stride=segment_stride,
+            emit_warnings=True,
+        )
         estimated_frequencies_asd_range_noise_debiased, estimated_psd_range_noise_debiased = (
             compute_weighted_average_psd_across_segments(
                 values=range_noise_debiased,
                 valid_propagation_segments_mask=valid_propagation_segments_mask,
                 time_step=time_step,
-                segment_length=segment_length,
-                segment_stride=segment_stride,
+                welch_segment_settings=candidate_welch_segment_settings,
             )
         )
         estimated_values_asd_range_noise_debiased = np.sqrt(estimated_psd_range_noise_debiased)
@@ -314,8 +460,7 @@ def run_psd_estimation_parameter_sensitivity_analysis(
                 values=differentiated_range_noise,
                 valid_propagation_segments_mask=valid_propagation_segments_mask,
                 time_step=time_step,
-                segment_length=segment_length,
-                segment_stride=segment_stride,
+                welch_segment_settings=candidate_welch_segment_settings,
             )
         )
         estimated_values_asd_differentiated_range_noise = np.sqrt(estimated_psd_differentiated_range_noise)
@@ -334,6 +479,9 @@ def run_psd_estimation_parameter_sensitivity_analysis(
         result = {
             "segment_length": float(segment_length),
             "segment_stride": float(segment_stride),
+            "segment_duration_seconds": float(segment_length * time_step),
+            "lowest_frequency_resolution_hz": float(1.0 / (segment_length * time_step)),
+            "number_of_used_propagation_segments": float(len(candidate_welch_segment_settings)),
             "log_rms_misfit": log_root_mean_square_misfit,
         }
         records.append(result)
@@ -369,6 +517,7 @@ def propagate_observation_errors_to_lgds(
     noisy_attitude_time_series: dict[str, dict[str, types.TimeSeries]],
     guidance_log: list[dict[str, Any]] | None,
     plotter: Plotter,
+    reference_orbital_period: float | None = None,
     accuracy_orders: list[int] | None = None,
     sensitivity_analysis_runs: int = 10000,
     sensitivity_analysis_seed: int = 42,
@@ -394,6 +543,9 @@ def propagate_observation_errors_to_lgds(
 
     if not np.any(valid_propagation_segments_mask):
         raise ValueError("No maneuver-free propagation samples are available for analysis.")
+
+    if reference_orbital_period is not None and reference_orbital_period <= 0.0:
+        raise ValueError("reference_orbital_period must be positive when provided.")
 
     target_position = apply_orbital_phasing_period_exclusion_mask(
         eci_position_data[0],
@@ -446,17 +598,18 @@ def propagate_observation_errors_to_lgds(
     # KBR range-noise (debiased) ASD via Welch estimation
     # ==========================================================
 
-    segment_length, segment_stride = get_welch_segment_settings_from_propagation_segments(
-        valid_propagation_segments_mask,
-        segment_length_divisor=8,
+    kbr_debiased_range_noise_welch_segment_settings = get_welch_segment_settings_from_propagation_segments(
+        valid_propagation_segments_mask=valid_propagation_segments_mask,
+        time_step=time_step,
+        target_lowest_frequency_resolution_hz=LOWEST_FREQUENCY_RESOLUTION_HZ,
+        warning_context="KBR debiased range-noise Welch ASD estimation",
     )
     estimated_frequencies_asd_kbr_range_noise_debiased, estimated_psd_kbr_range_noise_debiased = (
         compute_weighted_average_psd_across_segments(
             values=kbr_range_noise_debiased,
             valid_propagation_segments_mask=valid_propagation_segments_mask,
             time_step=time_step,
-            segment_length=segment_length,
-            segment_stride=segment_stride,
+            welch_segment_settings=kbr_debiased_range_noise_welch_segment_settings,
         )
     )
     estimated_values_asd_kbr_range_noise_debiased = np.sqrt(estimated_psd_kbr_range_noise_debiased)
@@ -470,6 +623,7 @@ def propagate_observation_errors_to_lgds(
         line_label="Welch Estimated ASD",
         x_limit_inf=1e-5,
         x_limit_sup=1e-1,
+        reference_orbital_period_seconds=reference_orbital_period,
     )
 
     # ==========================================================
@@ -638,10 +792,11 @@ def propagate_observation_errors_to_lgds(
         file_name="grace_fo_range_rate_noise_asd_comparison.png",
         ordinate_label=r"ASD [m s$^{-1}$ Hz$^{-1/2}$]",
         title="Range-Rate Noise ASD: Numerical vs Analytical Differentiation",
-        estimated_label="Welch ASD of Numerical Range Rate Noise",
-        reference_label=r"$(2\pi f)\,\mathrm{ASD}_{\rho}$",
+        estimated_label=r"ASD from Numerical Differentiation",
+        reference_label=r"ASD from Analytical Differentiation",
         x_limit_inf=1e-5,
         x_limit_sup=1e-1,
+        reference_orbital_period_seconds=reference_orbital_period,
     )
     plotter.plot_welch_estimated_asd_comparison(
         estimated_frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
@@ -651,10 +806,11 @@ def propagate_observation_errors_to_lgds(
         file_name="grace_fo_range_acceleration_noise_asd_comparison.png",
         ordinate_label=r"ASD [m s$^{-2}$ Hz$^{-1/2}$]",
         title="Range-Acceleration Noise ASD: Numerical vs Analytical Differentiation",
-        estimated_label="Welch ASD of Numerical Range Acceleration Noise",
-        reference_label=r"$(2\pi f)^2\,\mathrm{ASD}_{\rho}$",
+        estimated_label=r"ASD from Numerical Differentiation",
+        reference_label=r"ASD from Analytical Differentiation",
         x_limit_inf=1e-5,
         x_limit_sup=1e-1,
+        reference_orbital_period_seconds=reference_orbital_period,
     )
 
     print("=================================")
@@ -662,12 +818,16 @@ def propagate_observation_errors_to_lgds(
         "Best Welch estimation fit for the range-rate ASD comparison: "
         f"segment_length={int(first_derivative_spectral_sensitivity_analysis['best_record']['segment_length'])}, "
         f"segment_stride={int(first_derivative_spectral_sensitivity_analysis['best_record']['segment_stride'])}, "
+        f"lowest_frequency_resolution="
+        f"{first_derivative_spectral_sensitivity_analysis['best_record']['lowest_frequency_resolution_hz']:.6e} Hz, "
         f"log-RMS misfit={first_derivative_spectral_sensitivity_analysis['best_record']['log_rms_misfit']:.6e}"
     )
     print(
         "Best Welch estimation fit for the range-acceleration ASD comparison: "
         f"segment_length={int(second_derivative_spectral_sensitivity_analysis['best_record']['segment_length'])}, "
         f"segment_stride={int(second_derivative_spectral_sensitivity_analysis['best_record']['segment_stride'])}, "
+        f"lowest_frequency_resolution="
+        f"{second_derivative_spectral_sensitivity_analysis['best_record']['lowest_frequency_resolution_hz']:.6e} Hz, "
         f"log-RMS misfit={second_derivative_spectral_sensitivity_analysis['best_record']['log_rms_misfit']:.6e}"
     )
     print("=================================\n")
@@ -835,10 +995,12 @@ def propagate_observation_errors_to_lgds(
         file_name="grace_fo_lgd_error_propagation_time_series.png",
     )
 
-    lgd_spectrum_segment_length, lgd_spectrum_segment_stride = (
+    lgd_welch_segment_settings = (
         get_welch_segment_settings_from_propagation_segments(
             valid_propagation_segments_mask=valid_propagation_segments_mask,
-            segment_length_divisor=8,
+            time_step=time_step,
+            target_lowest_frequency_resolution_hz=LOWEST_FREQUENCY_RESOLUTION_HZ,
+            warning_context="LGD error ASD Welch estimation",
         )
     )
 
@@ -847,8 +1009,7 @@ def propagate_observation_errors_to_lgds(
             values=signal,
             valid_propagation_segments_mask=valid_propagation_segments_mask,
             time_step=time_step,
-            segment_length=lgd_spectrum_segment_length,
-            segment_stride=lgd_spectrum_segment_stride,
+            welch_segment_settings=lgd_welch_segment_settings,
         )
         return frequencies, np.sqrt(estimated_psd)
 
@@ -858,6 +1019,7 @@ def propagate_observation_errors_to_lgds(
         frequencies=lgd_error_frequencies,
         lgd_error_asd=lgd_error_asd,
         file_name="grace_fo_lgd_error_propagation_asd.png",
+        reference_orbital_period_seconds=reference_orbital_period,
     )
 
     print("=================================")
@@ -867,8 +1029,9 @@ def propagate_observation_errors_to_lgds(
     )
     print(
         "  LGD spectrum Welch settings: "
-        f"segment_length={lgd_spectrum_segment_length}, "
-        f"segment_stride={lgd_spectrum_segment_stride}"
+        f"segment_length={int(lgd_welch_segment_settings[0]['segment_length'])}, "
+        f"segment_stride={int(lgd_welch_segment_settings[0]['segment_stride'])}, "
+        f"lowest_frequency_resolution={lgd_welch_segment_settings[0]['lowest_frequency_resolution_hz']:.6e} Hz"
     )
     print("=================================\n")
 

@@ -24,7 +24,7 @@ from plotter import Plotter
 from noise_generator import NoiseGenerator
 from environment_customizer import EnvironmentCustomizer
 from guidance import Guidance
-from helpers import get_noise_model_version
+from helpers import get_mean_orbital_period, get_noise_model_version
 from differentiator import propagate_observation_errors_to_lgds
 
 # Load tudatpy modules
@@ -50,18 +50,18 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 2, 1, 0, 0, 0).to_epoch() 
+simulation_end_epoch = DateTime(2019, 1, 1, 1, 0, 0).to_epoch() 
 time_step = 5.0  # seconds
 # Add a small epoch buffer so the pointing-angle time series still spans the
 # full simulation window if orbit-phasing maneuvers introduce slight timing offsets.
-epochs_buffer = 2
+epochs_buffer = 10
 number_epochs = int(np.floor((simulation_end_epoch - simulation_start_epoch) / time_step)) + 1 + epochs_buffer
 
 # =====================================
 # ERROR-FREE POINTING ANGLES GENERATION 
 # =====================================
 
-plotter = Plotter(output_path=Path(f"./GRACE-FO/plots/version_{noise_model_version}"))
+plotter = Plotter(output_path=Path(f"./output/plots/version_{noise_model_version}"))
 
 pitch_history_json_path=Path("data/pitch_angles_asd_data.json")
 yaw_history_json_path=Path("data/yaw_angles_asd_data.json")
@@ -448,7 +448,7 @@ guidance_model = Guidance(
     reference_satellite="GRACE D",
     target_range=target_range,
     n_revolutions=1,
-    distance_threshold=20e3,
+    distance_threshold=25e3,
     cooldown_duration=3600.0,
 )
 
@@ -462,7 +462,7 @@ acceleration_settings_grace_d = {
                 de_sitter_central_body="Sun",
                 lense_thirring_angular_momentum=np.array([0.0, 0.0, 9.80e8]), # 
            ),
-           dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(60, 60),  # Default Max Degree: 200, Max Order: 200
+           dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(200, 200),  # Default Max Degree: 200, Max Order: 200
            dynamics.propagation_setup.acceleration.aerodynamic(),
            ],
     "Sun": [dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0),
@@ -489,7 +489,7 @@ acceleration_settings_grace_c = {
             use_de_sitter,
             de_sitter_central_body="Sun",
         ),
-        dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(60, 60),  # Default Max Degree: 200, Max Order: 200
+        dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(200, 200),  # Default Max Degree: 200, Max Order: 200
         dynamics.propagation_setup.acceleration.aerodynamic(),
         ],
     "Sun": [dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(2, 0),
@@ -737,6 +737,17 @@ dependent_variables_array = restructure_vector_history(
     stacked_dependent_variable_history
 )
 del stacked_dependent_variable_history
+
+mean_orbital_period_grace_c, mean_orbital_period_grace_d = get_mean_orbital_period(
+    dependent_variables_array=dependent_variables_array,
+    gravitational_parameter=earth_gravitational_parameter,
+)
+
+mean_grace_fo_orbital_period = 0.5 * (
+    mean_orbital_period_grace_c + mean_orbital_period_grace_d
+)
+
+del mean_orbital_period_grace_c, mean_orbital_period_grace_d
 
 # Release the heavy propagation/environment objects before entering the
 # measurement-simulation and error-propagation stages.
@@ -1039,6 +1050,7 @@ propagate_observation_errors_to_lgds(
     noisy_attitude_time_series=noisy_attitude_time_series,
     guidance_log=guidance_log,
     plotter=plotter,
+    reference_orbital_period=mean_grace_fo_orbital_period,
 )
 
 del accelerometer_observations_sf
@@ -1049,5 +1061,6 @@ del grace_fo_position_data
 del grace_fo_velocity_data
 del guidance_log
 del kbr_range_noise
+del mean_grace_fo_orbital_period
 del noisy_attitude_time_series
 gc.collect()
