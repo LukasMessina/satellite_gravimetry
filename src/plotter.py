@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from matplotlib.lines import Line2D
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.ticker import ScalarFormatter
+from matplotlib.ticker import FixedFormatter, FixedLocator, FuncFormatter, ScalarFormatter
 from helpers import transform_vector_history_inertial_to_satellite_frame, transform_vector_history_inertial_to_rtn
 from matplotlib.ticker import FormatStrFormatter
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
@@ -18,7 +18,7 @@ import matplotlib.image as mpimg
 
 
 # Define global color palette
-RED = "#92354C"
+RED = "#990033"
 ORANGE = "#D78643"
 BLUE = "#1E5AA8"
 TEAL = "#2CB7B2"
@@ -31,6 +31,17 @@ PRIMARY_COLORS = (
     BLACK,
 )
 GRID_COLOR = "#C8CDD7"
+PLOT_FONT_SIZE = 18
+AXIS_LABEL_SIZE = 22
+TITLE_FONT_SIZE = 22
+TICK_LABEL_SIZE = 20
+LEGEND_FONT_SIZE = 18
+SMALL_LEGEND_FONT_SIZE = 15
+OFFSET_TEXT_SIZE = 20
+COLORBAR_LABEL_SIZE = 21
+GRID_LINEWIDTH = 0.75
+MAJOR_GRID_ALPHA = 1.0
+MINOR_GRID_ALPHA = 0.9
 
 
 def apply_publication_style():
@@ -39,29 +50,30 @@ def apply_publication_style():
         "font.family": "serif",
         "font.serif": ["DejaVu Serif"],
         "mathtext.fontset": "dejavuserif",
-        "font.size": 12,
+        "font.size": PLOT_FONT_SIZE,
 
         # Axes
-        "axes.labelsize": 12,
-        "axes.titlesize": 13,
+        "axes.labelsize": AXIS_LABEL_SIZE,
+        "axes.titlesize": TITLE_FONT_SIZE,
         "axes.linewidth": 1.2,
         "axes.grid": True,
+        "axes.formatter.use_mathtext": True,
 
         # Grid
-        "grid.linestyle": ":",
-        "grid.linewidth": 0.7,
-        "grid.alpha": 0.7,
+        "grid.linestyle": "-",
+        "grid.linewidth": GRID_LINEWIDTH,
+        "grid.alpha": MAJOR_GRID_ALPHA,
 
         # Ticks
-        "xtick.labelsize": 11,
-        "ytick.labelsize": 11,
+        "xtick.labelsize": TICK_LABEL_SIZE,
+        "ytick.labelsize": TICK_LABEL_SIZE,
         "xtick.direction": "in",
         "ytick.direction": "in",
         "xtick.major.size": 6,
         "ytick.major.size": 6,
 
         # Legend
-        "legend.fontsize": 11,
+        "legend.fontsize": LEGEND_FONT_SIZE,
         "legend.frameon": True,
         "legend.framealpha": 0.9,
         "legend.edgecolor": "black",
@@ -120,6 +132,9 @@ class Plotter:
         ax.xaxis.label.set_size(14)
         ax.yaxis.label.set_size(14)
         ax.zaxis.label.set_size(14)
+        ax.xaxis.get_offset_text().set_fontsize(fontsize=12)
+        ax.yaxis.get_offset_text().set_fontsize(fontsize=12)
+        ax.zaxis.get_offset_text().set_fontsize(fontsize=12)
         ax.legend(loc="upper right", fontsize=11, frameon=True)
         ax.grid(True)
 
@@ -183,7 +198,7 @@ class Plotter:
         triad_scale = max(1.0, 0.2 * separation)
         box_half_extent = 0.5 * separation + 2.0 * triad_scale
 
-        fig = plt.figure(figsize=(6.2, 5.8), dpi=300)
+        fig = plt.figure(figsize=(10.8, 5.8), dpi=300)
         ax = fig.add_subplot(111, projection="3d", proj_type="ortho")
 
         colors = (RED, BLUE, TEAL)
@@ -202,7 +217,7 @@ class Plotter:
                     linewidth=2.0,
                 )
                 text_point = center + 1.8 * triad_scale * axis_direction
-                ax.text(*text_point, label, color=color, va="center", ha="center")
+                ax.text(*text_point, label, color=color, va="center", ha="center", fontsize=AXIS_LABEL_SIZE - 6)
 
             ax.text(
                 *center,
@@ -210,8 +225,8 @@ class Plotter:
                 color="k",
                 va="center",
                 ha="center",
-                fontsize = 9,
-                bbox={"fc": "w", "alpha": 0.8, "boxstyle": "circle,pad=0.25"},
+                fontsize=AXIS_LABEL_SIZE - 8,
+                bbox={"fc": "w", "alpha": 0.8, "boxstyle": "circle,pad=0.18"},
             )
 
         _plot_triad(grace_c_position, rotation_body_to_inertial_grace_c, "C")
@@ -229,19 +244,22 @@ class Plotter:
             loc="upper left",          # similar placement to your annotation
             frameon=True,
             borderaxespad=0.5,
-            fontsize=9,
+            fontsize=SMALL_LEGEND_FONT_SIZE,
         )
 
         ax.set_xlim(midpoint[0] - box_half_extent, midpoint[0] + box_half_extent)
         ax.set_ylim(midpoint[1] - box_half_extent, midpoint[1] + box_half_extent)
         ax.set_zlim(midpoint[2] - box_half_extent, midpoint[2] + box_half_extent)
-        ax.tick_params(axis="both", which="major", labelsize=10)
-        ax.tick_params(axis="z", which="major", labelsize=10)
+        ax.tick_params(axis="both", which="major", labelsize=TICK_LABEL_SIZE - 4)
+        ax.tick_params(axis="z", which="major", labelsize=TICK_LABEL_SIZE - 4)
         ax.set_box_aspect([1.0, 1.0, 1.0])
 
-        ax.set_xlabel("x [m]", fontsize=11)
-        ax.set_ylabel("y [m]", fontsize=11)
-        ax.set_zlabel("z [m]", fontsize=11)
+        triad_axis_label_size = AXIS_LABEL_SIZE - 4
+        triad_offset_text_size = OFFSET_TEXT_SIZE - 4
+
+        ax.set_xlabel("x [m]", fontsize=triad_axis_label_size, labelpad=12)
+        ax.set_ylabel("y [m]", fontsize=triad_axis_label_size, labelpad=14)
+        ax.set_zlabel("z [m]", fontsize=triad_axis_label_size, labelpad=14)
         # ax.set_title(f"GRACE Attitude triads - epoch index {epoch_idx}", fontsize=10)
 
         for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
@@ -250,11 +268,17 @@ class Plotter:
             formatter.set_powerlimits((0, 0))   # always use scientific notation
             axis.set_major_formatter(formatter)
 
-        ax.xaxis.get_offset_text().set_fontsize(9)
-        ax.yaxis.get_offset_text().set_fontsize(9)
-        ax.zaxis.get_offset_text().set_fontsize(9)
+        offset_text_positions = {
+            ax.xaxis: (0.02, -0.08),
+            ax.yaxis: (1.04, -0.02),
+            ax.zaxis: (1.08, 0.98),
+        }
+        for axis, position in offset_text_positions.items():
+            offset_text = axis.get_offset_text()
+            offset_text.set_fontsize(triad_offset_text_size)
+            offset_text.set_position(position)
 
-        fig.subplots_adjust(left=0.06, right=0.84, bottom=0.08, top=0.90)
+        fig.subplots_adjust(left=0.04, right=0.90, bottom=0.12, top=0.90)
         fig.savefig(self.output_path / file_name, bbox_inches="tight", pad_inches=0.35)
         plt.close(fig)
     
@@ -289,7 +313,7 @@ class Plotter:
         x_data: np.ndarray,
         y_data: np.ndarray,
         z_data: np.ndarray,
-        color: str = "#4A4A4A",
+        color: str = "#5F5E5E",
         linewidth: float = 1.2,
         alpha: float = 0.85,
     ) -> None:
@@ -419,8 +443,11 @@ class Plotter:
         fig.savefig(self.output_path / first_file_name)
         plt.close(fig)
 
-        fig = plt.figure(figsize=(9.2, 7.2), dpi=300)
+        fig = plt.figure(figsize=(14.2, 5.2), dpi=300, facecolor="white")
         ax = fig.add_subplot(111, projection="3d")
+        ax.set_facecolor("white")
+        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+            axis.set_pane_color((1.0, 1.0, 1.0, 1.0))
 
         # Crop the data for better visualization of the relative trajectory shape
         cross_track_distance = cross_track_distance[:30000]
@@ -429,9 +456,12 @@ class Plotter:
         propagation_time_hours = ((time_data - time_data[0]) / 3600.0)[:30000]
 
 
-        ax.xaxis.set_major_formatter(FormatStrFormatter('%.1e'))
+        ax.xaxis.set_major_formatter(FormatStrFormatter('%.0e'))
         ax.yaxis.set_major_formatter(FormatStrFormatter('%.1e'))
         ax.zaxis.set_major_formatter(FormatStrFormatter('%.2e'))
+        ax.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=3))
+        ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=3))
+        ax.zaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=3))
 
         relative_position_rtn = np.column_stack(
             (cross_track_distance * 1e3, radial_distance * 1e3, along_track_distance * 1e3)
@@ -454,12 +484,13 @@ class Plotter:
         ax.add_collection3d(trajectory_collection)
 
 
-        ax.set_title(second_figure_title, fontsize=13)
-        ax.set_xlabel("N [m]", labelpad=8)
-        ax.set_ylabel("R [m]", labelpad=24)
-        ax.set_zlabel("T [m]", labelpad=30)
+        # ax.set_title(second_figure_title, fontsize=13)
+        ax.set_xlabel("N [m]", labelpad=18, fontsize=AXIS_LABEL_SIZE - 6)
+        ax.set_ylabel("R [m]", labelpad=26, fontsize=AXIS_LABEL_SIZE - 6)
+        ax.set_zlabel("T [m]", labelpad=48, fontsize=AXIS_LABEL_SIZE - 6)
         ax.grid(True)
         self._set_equal_3d_axes(ax, data=relative_position_rtn, additional_plane_padding=True)
+
         self._plot_3d_box_projections(
             ax,
             relative_position_rtn[:, 0],
@@ -467,22 +498,23 @@ class Plotter:
             relative_position_rtn[:, 2],
         )
 
-        ax.tick_params(axis="x", which="major", pad=2)
-        ax.tick_params(axis="y", which="major", pad=14)
-        ax.tick_params(axis="z", which="major", pad=18)
+        ax.tick_params(axis="x", which="major", pad=10, labelsize=TICK_LABEL_SIZE - 6)
+        ax.tick_params(axis="y", which="major", pad=6, labelsize=TICK_LABEL_SIZE - 6)
+        ax.tick_params(axis="z", which="major", pad=22, labelsize=TICK_LABEL_SIZE - 6)
 
         colorbar = fig.colorbar(
             trajectory_collection,
             ax=ax,
-            pad=0.12,
+            pad=0.14,
             fraction=0.035,
             shrink=0.82,
         )
-        colorbar.set_label("Propagation time [hours]", rotation=90, labelpad=14)
+        colorbar.set_label("Propagation time [hours]", rotation=90, labelpad=14, fontsize=AXIS_LABEL_SIZE - 6)
+
+        colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE - 6)
 
 
-        fig.tight_layout(rect=(0.0, 0.0, 0.92, 1.0))
-        fig.savefig(self.output_path / second_file_name, bbox_inches="tight", pad_inches=0.25)
+        fig.savefig(self.output_path / second_file_name, bbox_inches="tight", pad_inches=0.25, facecolor="white")
         plt.close(fig)
 
         return relative_position_norm
@@ -661,11 +693,11 @@ class Plotter:
         ]
 
         ellipse_angle = np.linspace(0.0, 2.0 * np.pi, 400)
-        colors = self._get_colors_palette(5)
         confidence_interval_colors = ["#000000", "#555555", "#AAAAAA"]
 
 
-        fig = plt.figure(figsize=(14, 4.8))
+        fig = plt.figure(figsize=(13, 4.8))
+        legend_handles = []
         for i, (a, b, la, lb) in enumerate(planes, start=1):
             ax = fig.add_subplot(1, 3, i)
 
@@ -676,17 +708,25 @@ class Plotter:
 
                 xa = ksig * sigma_rtn[a] * np.cos(ellipse_angle)
                 xb = ksig * sigma_rtn[b] * np.sin(ellipse_angle)
-                ax.plot(xa, xb, linewidth=2, label=f"{ksig}σ", color=reference_color)
+                (line,) = ax.plot(xa, xb, linewidth=2, label=f"{ksig}σ", color=reference_color)
+                if i == 1:
+                    legend_handles.append(line)
 
             ax.set_xlabel(f"{la} [m]")
             ax.set_ylabel(f"{lb} [m]")
             # ax.set_title(f"{la}-{lb} plane projection")
             ax.axis("equal")
             self._style_axes(ax)
-            ax.legend(loc="upper right")
 
         # fig.suptitle("RTN noise samples and uncertainty ellipses")
-        plt.tight_layout()
+        fig.legend(
+            handles=legend_handles,
+            loc="lower center",
+            ncol=len(legend_handles),
+            bbox_to_anchor=(0.55, 0.0),
+            frameon=True,
+        )
+        fig.tight_layout(rect=(0.0, 0.12, 1.0, 1.0))
         fig.savefig(self.output_path / file_name)
         plt.close(fig)
 
@@ -779,7 +819,7 @@ class Plotter:
                 bbox_to_anchor=(0.5, -0.20),   # below x-axis
                 ncol=min(5, len(results)),     # one row (up to 5 columns; adjust if needed)
                 frameon=True,
-                fontsize=10,
+                fontsize=LEGEND_FONT_SIZE,
                 handlelength=2.0,
                 columnspacing=1.2,
             )
@@ -833,7 +873,7 @@ class Plotter:
             bbox_to_anchor=(0.5, -0.15),   # below x-axis
             ncol=min(3, len(results)),     # one row (up to 5 columns; adjust if needed)
             frameon=True,
-            fontsize=10,
+            fontsize=LEGEND_FONT_SIZE,
             handlelength=2.0,
             columnspacing=1.2,
         )
@@ -896,14 +936,14 @@ class Plotter:
         ax.set_ylabel(r"$|\epsilon_{a_{\mathrm{LOS}}(t)}|$ [m/s$^2$]")
         ax.set_yscale("log")
 
-        self._style_axes(ax, article_style=False)
+        self._style_axes(ax, publication_style=False)
 
         ax.legend(
             loc="upper center",
             bbox_to_anchor=(0.5, -0.12),
             ncol=min(3, len(results)),
             frameon=True,
-            fontsize=10,
+            fontsize=LEGEND_FONT_SIZE,
             handlelength=2.0,
             columnspacing=1.2,
             markerscale=2,
@@ -923,7 +963,7 @@ class Plotter:
         ylabel: str,
         title: str,
         rms_unit_label: str,
-        time_samples_window_size: int  = 8640,
+        time_samples_window_size: int  = 2000,
     ) -> None:
         """Plot finite-difference schemes numerical derivation absolute errors for several accuracy orders."""
 
@@ -935,7 +975,7 @@ class Plotter:
         propagation_time = time - time[0]
         propagation_time = propagation_time[:time_samples_window_size]
 
-        fig = plt.figure(figsize=(9.5, 6), dpi=160)
+        fig = plt.figure(figsize=(20, 6), dpi=160)
         ax = fig.add_subplot(111)
 
         for accuracy in sorted(results.keys()):
@@ -968,16 +1008,17 @@ class Plotter:
 
         ax.legend(
             loc="upper center",
-            bbox_to_anchor=(0.5, -0.12),
+            bbox_to_anchor=(0.5, -0.18),
             ncol=min(3, len(results)),
             frameon=True,
-            fontsize=11,
+            fontsize=LEGEND_FONT_SIZE,
             handlelength=2.0,
             columnspacing=1.2,
+            markerscale=3.5,
         )
 
         fig.tight_layout()
-        fig.subplots_adjust(bottom=0.10)
+        fig.subplots_adjust(bottom=0.16)
         fig.savefig(self.output_path / file_name, bbox_inches="tight")
         plt.close(fig)
 
@@ -1024,7 +1065,7 @@ class Plotter:
         ax.set_xlabel("Propagation time [hours]")
         ax.set_ylabel(r"Acceleration error [m/s$^2$]")
         self._style_axes(ax)
-        ax.legend(loc="best", frameon=True)
+        ax.legend(loc="best", frameon=True, fontsize=LEGEND_FONT_SIZE - 3)
 
         fig.tight_layout()
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
@@ -1039,11 +1080,17 @@ class Plotter:
         x_limit_inf: float | None = 1e-5,
         x_limit_sup: float | None = 1e-1,
         reference_orbital_period_seconds: float | None = None,
+        smoothed_frequencies: np.ndarray | None = None,
+        smoothed_lgd_error_asd: np.ndarray | None = None,
     ) -> None:
         """Plot the ASD of the LGD error."""
 
         frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
         lgd_error_asd = np.asarray(lgd_error_asd, dtype=float).reshape(-1)
+        if smoothed_frequencies is not None:
+            smoothed_frequencies = np.asarray(smoothed_frequencies, dtype=float).reshape(-1)
+        if smoothed_lgd_error_asd is not None:
+            smoothed_lgd_error_asd = np.asarray(smoothed_lgd_error_asd, dtype=float).reshape(-1)
 
         fig = plt.figure(figsize=self._get_single_panel_size(), dpi=240)
         ax = fig.add_subplot(111)
@@ -1055,12 +1102,21 @@ class Plotter:
             linewidth=2.0,
             label = r"$\mathrm{ASD}\,\!\left(\epsilon_{\mathrm{LGD}}\right)$"
             )
+        if smoothed_frequencies is not None and smoothed_lgd_error_asd is not None:
+            ax.loglog(
+                smoothed_frequencies,
+                smoothed_lgd_error_asd,
+                color=TEAL,
+                linewidth=1.6,
+                linestyle="--",
+                label="Log-Binned Smoothing",
+            )
 
         # ax.set_title(title, pad=14.0)
         ax.set_xlabel("Frequency [Hz]")
         ax.set_ylabel(r"ASD [m s$^{-2}$ Hz$^{-1/2}$]")
         self._style_axes(ax)
-        ax.legend(loc="best", frameon=True)
+        ax.legend(loc="best", frameon=True, fontsize=LEGEND_FONT_SIZE - 3)
 
         if x_limit_inf is not None and x_limit_sup is not None:
             ax.set_xlim(x_limit_inf, x_limit_sup)
@@ -1089,7 +1145,13 @@ class Plotter:
     def _get_article_three_row_size() -> tuple[float, float]:
         return (13.2, 7.2)
 
-    def _style_axes(self, ax: plt.Axes, *, publication_style: bool = True) -> None:
+    def _style_axes(
+        self,
+        ax: plt.Axes,
+        *,
+        publication_style: bool = True,
+        offset_text_size: int = OFFSET_TEXT_SIZE,
+    ) -> None:
         ax.minorticks_on()
 
         if not publication_style:
@@ -1098,8 +1160,14 @@ class Plotter:
             ax.spines["top"].set_linewidth(1.2)
             ax.spines["right"].set_linewidth(1.2)
             ax.set_axisbelow(True)
-            ax.grid(True, which="major", linestyle="-", linewidth=0.8, alpha=0.6)
-            ax.grid(True, which="minor", linestyle="-", linewidth=0.7, alpha=0.45)
+            ax.grid(True, which="major", linestyle="-", linewidth=GRID_LINEWIDTH, alpha=MAJOR_GRID_ALPHA, color=GRID_COLOR)
+            ax.grid(True, which="minor", linestyle="--", linewidth=GRID_LINEWIDTH, alpha=MINOR_GRID_ALPHA, color=GRID_COLOR)
+            ax.tick_params(axis="both", which="major", labelsize=TICK_LABEL_SIZE)
+            ax.xaxis.label.set_size(AXIS_LABEL_SIZE)
+            ax.yaxis.label.set_size(AXIS_LABEL_SIZE)
+            ax.title.set_size(TITLE_FONT_SIZE)
+            ax.xaxis.get_offset_text().set_fontsize(offset_text_size)
+            ax.yaxis.get_offset_text().set_fontsize(offset_text_size)
             return
 
         ax.spines["left"].set_linewidth(1.15)
@@ -1107,13 +1175,13 @@ class Plotter:
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.set_axisbelow(True)
-        ax.grid(True, which="major", linestyle="-", linewidth=0.8, alpha=0.55, color=GRID_COLOR)
-        ax.grid(False, which="minor")
+        ax.grid(True, which="major", linestyle="-", linewidth=GRID_LINEWIDTH, alpha=MAJOR_GRID_ALPHA, color=GRID_COLOR)
+        ax.grid(True, which="minor", linestyle="--", linewidth=GRID_LINEWIDTH, alpha=MINOR_GRID_ALPHA, color=GRID_COLOR)
         ax.tick_params(
             axis="both",
             which="major",
             direction="out",
-            labelsize=13,
+            labelsize=TICK_LABEL_SIZE,
             width=0.95,
             length=5.5,
         )
@@ -1124,9 +1192,52 @@ class Plotter:
             width=0.75,
             length=3.0,
         )
-        ax.xaxis.label.set_size(15)
-        ax.yaxis.label.set_size(15)
-        ax.title.set_size(15)
+        ax.xaxis.label.set_size(AXIS_LABEL_SIZE)
+        ax.yaxis.label.set_size(AXIS_LABEL_SIZE)
+        ax.title.set_size(TITLE_FONT_SIZE)
+        ax.xaxis.get_offset_text().set_fontsize(offset_text_size)
+        ax.yaxis.get_offset_text().set_fontsize(offset_text_size)
+
+    @staticmethod
+    def _move_xaxis_offset_text(ax: plt.Axes, *, x: float = 1.08) -> None:
+        """Place the x-axis scientific scale factor."""
+        offset_text = ax.xaxis.get_offset_text()
+        offset_text.set_horizontalalignment("left")
+        offset_text.set_x(x)
+
+    @staticmethod
+    def _set_split_fontsize_ylabel(
+        ax: plt.Axes,
+        label: str,
+        units_label: str,
+        *,
+        x: float = -0.16,
+        label_y: float = 0.38,
+        units_y: float = 0.62,
+        label_fontsize: float = AXIS_LABEL_SIZE + 2,
+        units_fontsize: float = AXIS_LABEL_SIZE,
+    ) -> None:
+        ax.set_ylabel("")
+        ax.text(
+            x,
+            label_y,
+            label,
+            transform=ax.transAxes,
+            rotation=90,
+            va="center",
+            ha="center",
+            fontsize=label_fontsize,
+        )
+        ax.text(
+            x,
+            units_y,
+            units_label,
+            transform=ax.transAxes,
+            rotation=90,
+            va="center",
+            ha="center",
+            fontsize=units_fontsize,
+        )
 
     def _add_cycles_per_revolution_secondary_xaxis(
         self,
@@ -1154,8 +1265,9 @@ class Plotter:
             ),
         )
         secondary_xaxis.set_xscale(ax.get_xscale())
-        secondary_xaxis.set_xlabel("Frequency [CPR]", labelpad=10.0, fontsize=14)
-        secondary_xaxis.tick_params(axis="x", which="both", direction="in", labelsize=12)
+        secondary_xaxis.set_xlabel("Frequency [CPR]", labelpad=10.0, fontsize=AXIS_LABEL_SIZE)
+        secondary_xaxis.tick_params(axis="x", which="both", direction="in", labelsize=TICK_LABEL_SIZE)
+        secondary_xaxis.xaxis.get_offset_text().set_fontsize(OFFSET_TEXT_SIZE)
 
     def plot_pointing_angles_asd(
         self,
@@ -1210,11 +1322,11 @@ class Plotter:
 
         colors = self._get_colors_palette(5)
         data = [
-            ("Star Camera Roll Noise", np.asarray(star_camera_assembly_asd_roll, dtype=float), colors[2], "-", 2.0),
-            ("Star Camera Pitch/Yaw Noise", np.asarray(star_camera_assembly_asd_pitch_yaw, dtype=float), colors[0], "-", 2.0),
-            ("IMU Isotropic Noise", np.asarray(inertial_measurement_unit_pointing_angle_asd, dtype=float), colors[1], "-", 2.8),
-            ("Combined Roll Noise", np.asarray(combined_asd_roll, dtype=float), colors[3], "--", 2.0),
-            ("Combined Pitch/Yaw Noise", np.asarray(combined_asd_pitch_yaw, dtype=float), colors[4], ":", 2.0),
+            ("Star Camera Roll Noise", np.asarray(star_camera_assembly_asd_roll, dtype=float), colors[2], "-", 3.0),
+            ("Star Camera Pitch/Yaw Noise", np.asarray(star_camera_assembly_asd_pitch_yaw, dtype=float), colors[0], "-", 3.0),
+            ("IMU Isotropic Noise", np.asarray(inertial_measurement_unit_pointing_angle_asd, dtype=float), colors[1], "-", 3.8),
+            ("Combined Roll Noise", np.asarray(combined_asd_roll, dtype=float), colors[3], "--", 3.0),
+            ("Combined Pitch/Yaw Noise", np.asarray(combined_asd_pitch_yaw, dtype=float), colors[4], ":", 3.0),
         ]
 
         fig = plt.figure(figsize=self._get_single_panel_size())
@@ -1246,7 +1358,7 @@ class Plotter:
             1e-0,
         )
         self._style_axes(ax)
-        ax.legend(loc="best", frameon=True)
+        ax.legend(loc="best", frameon=True, fontsize=SMALL_LEGEND_FONT_SIZE)
 
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
@@ -1300,6 +1412,8 @@ class Plotter:
         interpolated_asd_values: np.ndarray,
         file_name: str,
         ordinate_label = r"ASD [rad Hz$^{-1/2}$]",
+        x_limit_inf=1e-5,
+        x_limit_sup=1e-1,
     ) -> None:
         """Plot comparison between original and linearly interpolated ASD data."""
 
@@ -1312,8 +1426,9 @@ class Plotter:
         # plt.title("ASD Data: Original vs Interpolated")
         plt.xlabel("Frequency [Hz]")
         plt.ylabel(ordinate_label)
+        plt.xlim(x_limit_inf, x_limit_sup)
         self._style_axes(plt.gca())
-        plt.legend(loc="upper right", frameon=True)
+        plt.legend(loc="lower left", frameon=True)
 
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
@@ -1323,17 +1438,42 @@ class Plotter:
         noise_time_series,
         file_name: str,
         ordinate_label: str,
+        ordinate_symbol_label: str | None = None,
+        ordinate_units_label: str | None = None,
+        split_label_x: float = -0.16,
+        split_symbol_y: float = 0.38,
+        split_units_y: float = 0.62,
+        use_scientific_yaxis: bool = False,
     ) -> None:
         """Plot time series of pointing angle noise."""
 
         fig = plt.figure(figsize=self._get_single_panel_size())
+        ax = plt.gca()
 
         plt.plot(noise_time_series.sample_times, noise_time_series, color=RED, linewidth=1.8)
 
         # plt.title("Pointing Angle Noise Time Series")
-        plt.xlabel("Time [s]")
-        plt.ylabel(ordinate_label)
-        self._style_axes(plt.gca())
+        ax.set_xlabel("Time [s]")
+        if ordinate_symbol_label is not None and ordinate_units_label is not None:
+            self._set_split_fontsize_ylabel(
+                ax,
+                ordinate_symbol_label,
+                ordinate_units_label,
+                x=split_label_x,
+                label_y=split_symbol_y,
+                units_y=split_units_y,
+                label_fontsize=AXIS_LABEL_SIZE + 4,
+                units_fontsize=AXIS_LABEL_SIZE,
+            )
+        else:
+            ax.set_ylabel(ordinate_label)
+        if use_scientific_yaxis:
+            scientific_formatter = ScalarFormatter(useMathText=True)
+            scientific_formatter.set_scientific(True)
+            scientific_formatter.set_powerlimits((0, 0))
+            scientific_formatter.set_useOffset(False)
+            ax.yaxis.set_major_formatter(scientific_formatter)
+        self._style_axes(ax)
 
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
@@ -1350,6 +1490,7 @@ class Plotter:
             and len(noise_time_series) > 0
         ):
             component_labels = (r"$r_x$", r"$r_y$", r"$r_z$")
+            offset_text_size = OFFSET_TEXT_SIZE - 4
             fig, axes = plt.subplots(1, len(noise_time_series), figsize=(12.6, 4.8), dpi=300, sharex=True)
             axes = np.atleast_1d(axes)
 
@@ -1366,9 +1507,9 @@ class Plotter:
                 ax.set_xlabel("Time [s]")
                 if component_idx == 0:
                     ax.set_ylabel("Position Error [m]")
-                ax.legend(loc="upper right", frameon=True, fontsize=13)  
+                ax.legend(loc="upper right", frameon=True, fontsize=LEGEND_FONT_SIZE)  
 
-                self._style_axes(ax)
+                self._style_axes(ax, offset_text_size=offset_text_size)
 
             # fig.suptitle("Absolute Inertial Position Noise Time Series", y=0.97)
             fig.tight_layout()
@@ -1437,7 +1578,7 @@ class Plotter:
         if len(estimated_frequencies) > 1:
             component_labels = ("x", "y", "z")
             colors = self._get_colors_palette(2)
-            fig, axes = plt.subplots(1, len(estimated_frequencies), figsize=(12.6, 4.8), dpi=300, sharey=True)
+            fig, axes = plt.subplots(1, len(estimated_frequencies), figsize=(13.6, 6.8), dpi=300, sharey=True)
             axes = np.atleast_1d(axes)
 
             for component_idx, ax in enumerate(axes):
@@ -1464,7 +1605,7 @@ class Plotter:
                 if x_limit_inf is not None and x_limit_sup is not None:
                     ax.set_xlim(x_limit_inf, x_limit_sup)
 
-                ax.set_title(f"{component_label} component", fontsize = 13)
+                ax.set_title(f"{component_label} component", fontsize=TITLE_FONT_SIZE)
 
             fig.legend(
                 [first_line, second_line],
@@ -1473,7 +1614,7 @@ class Plotter:
                 bbox_to_anchor=(0.5, -0.02),
                 ncol=2,
                 frameon=True,
-                fontsize=13,
+                fontsize=LEGEND_FONT_SIZE,
             )
             # fig.suptitle(title)
             fig.tight_layout()
@@ -1522,11 +1663,17 @@ class Plotter:
         x_limit_inf: float | None = None,
         x_limit_sup: float | None = None,
         reference_orbital_period_seconds: float | None = None,
+        smoothed_frequencies: np.ndarray | None = None,
+        smoothed_asd_values: np.ndarray | None = None,
     ) -> None:
         """Plot the Welch-estimated ASD spectrum."""
 
         frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
         asd_values = np.asarray(asd_values, dtype=float).reshape(-1)
+        if smoothed_frequencies is not None:
+            smoothed_frequencies = np.asarray(smoothed_frequencies, dtype=float).reshape(-1)
+        if smoothed_asd_values is not None:
+            smoothed_asd_values = np.asarray(smoothed_asd_values, dtype=float).reshape(-1)
 
         fig = plt.figure(figsize=self._get_single_panel_size())
         ax = fig.add_subplot(111)
@@ -1538,6 +1685,15 @@ class Plotter:
             linewidth=2.0,
             label=line_label,
         )
+        if smoothed_frequencies is not None and smoothed_asd_values is not None:
+            ax.loglog(
+                smoothed_frequencies,
+                smoothed_asd_values,
+                color=TEAL,
+                linewidth=1.6,
+                linestyle="--",
+                label="Log-Binned Smoothing",
+            )
 
         # ax.set_title(title, pad=14.0)
         ax.set_xlabel("Frequency [Hz]")
@@ -1655,7 +1811,7 @@ class Plotter:
             segment_strides[best_index],
             lowest_frequency_resolutions_hz[best_index],
             color="red",
-            s=80,
+            s=110,
             marker="X",
             edgecolors="none",
             linewidths=0,
@@ -1666,12 +1822,20 @@ class Plotter:
         # ax.set_title(title)
         ax.set_xlabel("Segment Stride [samples]")
         ax.set_ylabel(r"$1 / T_{\mathrm{segment}}$ [Hz]")
+
+        scientific_formatter = ScalarFormatter(useMathText=True)
+        scientific_formatter.set_scientific(True)
+        scientific_formatter.set_powerlimits((0, 0))
+        scientific_formatter.set_useOffset(False)
+        ax.xaxis.set_major_formatter(scientific_formatter)
+
         self._style_axes(ax)
+        self._move_xaxis_offset_text(ax)
         ax.legend(loc="best", frameon=True)
 
         colorbar = fig.colorbar(scatter, ax=ax)
-        colorbar.set_label(colorbar_label, fontsize=14)
-        colorbar.ax.tick_params(labelsize=12)
+        colorbar.set_label(colorbar_label, fontsize=COLORBAR_LABEL_SIZE)
+        colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)
 
         fig.tight_layout()
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
@@ -1758,15 +1922,21 @@ class Plotter:
                 linewidth=1.6,
                 label=component_labels[component_idx],
             )
+            scientific_formatter = ScalarFormatter(useMathText=True)
+            scientific_formatter.set_scientific(True)
+            scientific_formatter.set_powerlimits((0, 0))
+            scientific_formatter.set_useOffset(False)
+            ax.yaxis.set_major_formatter(scientific_formatter)
+
             # ax.set_title(f"{component_label} Component")
-            ax.set_ylabel(r"Noise [m s$^{-2}$]")
-            ax.legend(loc="upper right", frameon=True, fontsize = 13)
+            ax.legend(loc="upper right", frameon=True, fontsize=LEGEND_FONT_SIZE)
             self._style_axes(ax)
             if component_idx == len(component_noise_time_series) - 1:
                 ax.set_xlabel("Time [s]")
 
         # fig.suptitle(suptitle, y=0.98)
-        fig.tight_layout()
+        fig.supylabel(r"Noise [m s$^{-2}$]", x=0.01, fontsize=AXIS_LABEL_SIZE)
+        fig.tight_layout(rect=(0.04, 0.0, 1.0, 1.0))
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
         plt.close(fig)
 
@@ -1915,6 +2085,12 @@ class Plotter:
                 color=RED,
                 linewidth=1.8,
             )
+            scientific_formatter = ScalarFormatter(useMathText=True)
+            scientific_formatter.set_scientific(True)
+            scientific_formatter.set_powerlimits((0, 0))
+            scientific_formatter.set_useOffset(False)
+            axis.yaxis.set_major_formatter(scientific_formatter)
+
             axis.set_ylabel(rf"$\Delta p_{{{component_label},SF}}$ [m]")
             # axis.set_title(f"{component_label.upper()} component")
             self._style_axes(axis)
@@ -1961,7 +2137,7 @@ class Plotter:
         ax.set_xlabel("Propagation time [hours]")
         ax.set_ylabel(r"$\|a_{\mathrm{SRP}}\|$ [m/s$^2$]")
         self._style_axes(ax)
-        ax.legend(loc="best")
+        ax.legend(loc="upper right")
         fig.tight_layout()
         fig.savefig(self.output_path / norm_file_name, bbox_inches="tight")
         plt.close(fig)
@@ -1977,7 +2153,7 @@ class Plotter:
             srp_acc_j2000_grace_d, rotation_j2000_to_sf_grace_d
         )
 
-        comp_labels = ["x", "y", "z"]
+        comp_labels = ["X", "Y", "Z"]
         for j, comp in enumerate(comp_labels):
             fig = plt.figure(figsize=self._get_single_panel_size(), dpi=300)
             ax = fig.add_subplot(111)
@@ -1987,9 +2163,14 @@ class Plotter:
 
             # ax.set_title(f"{components_title_prefix} {comp}_SF time evolution — GRACE-FO")
             ax.set_xlabel("Propagation time [hours]")
-            ax.set_ylabel(rf"$a_{{\mathrm{{SRP}},{comp}_{{SF}}}}$ [m/s$^2$]")
             self._style_axes(ax)
-            ax.legend(loc="best")
+            self._set_split_fontsize_ylabel(
+                ax,
+                rf"$a_{{\mathrm{{SRP}},{comp}}}$",
+                units_label=r"[m/s$^2$]"
+            )
+            if j == 0:
+                ax.legend(loc="upper right")
 
             fig.tight_layout()
 
@@ -2032,9 +2213,9 @@ class Plotter:
         ax.plot(time_hours, aero_acc_norm_grace_d, color=colors[1], linewidth=2.5, linestyle="--", label="GRACE-D")
         # ax.set_title(norm_title)
         ax.set_xlabel("Propagation time [hours]")
-        ax.set_ylabel(r"$\|a_{\mathrm{aero}}\|$ [m/s$^2$]")
+        ax.set_ylabel(r"$\|a_{\mathrm{AERO}}\|$ [m/s$^2$]")
         self._style_axes(ax)
-        ax.legend(loc="best")
+        ax.legend(loc="upper right")
         fig.tight_layout()
         fig.savefig(self.output_path / norm_file_name, bbox_inches="tight")
         plt.close(fig)
@@ -2050,7 +2231,7 @@ class Plotter:
             aero_acc_j2000_grace_d, rotation_j2000_to_sf_grace_d
         )
 
-        comp_labels = ["x", "y", "z"]
+        comp_labels = ["X", "Y", "Z"]
         for j, comp in enumerate(comp_labels):
             fig = plt.figure(figsize=self._get_single_panel_size(), dpi=300)
             ax = fig.add_subplot(111)
@@ -2060,10 +2241,14 @@ class Plotter:
 
             # ax.set_title(f"{components_title_prefix} {comp}_SF time evolution — GRACE-FO")
             ax.set_xlabel("Propagation time [hours]")
-            ax.set_ylabel(rf"$a_{{\mathrm{{aero}},{comp}_{{SF}}}}$ [m/s$^2$]")
 
             self._style_axes(ax)
-            ax.legend(loc="best")
+            self._set_split_fontsize_ylabel(
+                ax,
+                rf"$a_{{\mathrm{{AERO}},{comp}}}$",
+                units_label=r"[m/s$^2$]"
+            )
+            # ax.legend(loc="upper right")
 
             fig.tight_layout()
 
@@ -2126,7 +2311,8 @@ class Plotter:
                 axis.yaxis.set_major_formatter(formatter)
 
         for axis in axes[-1, :]:
-            axis.set_xlabel("Propagation time [days]")
+            axis.set_xlabel("")
+        axes[-1, 1].set_xlabel("Propagation time [days]")
 
         # fig.suptitle("Keplerian element differences between GRACE C and GRACE D")
         fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))

@@ -10,8 +10,7 @@ from scipy.spatial.transform import Rotation
 from plotter import Plotter
 
 # Define constants
-LOWEST_FREQUENCY_RESOLUTION_HZ = 0.5e-3
-
+LOWEST_FREQUENCY_RESOLUTION_HZ = 5e-6
 
 def compute_acceleration(
         position: np.ndarray,
@@ -136,7 +135,7 @@ def build_welch_estimation_segment_settings(
     emit_warnings: bool = False,
     warning_context: str = "Welch estimation",
 ) -> list[dict[str, Any]]:
-    """Return the propagation arcs that can support the requested Welch segment length."""
+    """Return propagation arcs that support the requested segment length and median-mean averaging."""
 
     if segment_length < 1:
         raise ValueError("segment_length must be at least one sample.")
@@ -145,6 +144,8 @@ def build_welch_estimation_segment_settings(
 
     requested_segment_duration_seconds = segment_length * time_step
     lowest_frequency_resolution_hz = 1.0 / requested_segment_duration_seconds
+    minimum_segment_length_for_median_mean = segment_length + segment_stride
+    minimum_segment_duration_for_median_mean_seconds = minimum_segment_length_for_median_mean * time_step
     welch_segment_settings: list[dict[str, Any]] = []
 
     for arc_idx, propagation_arc in enumerate(
@@ -154,7 +155,7 @@ def build_welch_estimation_segment_settings(
         propagation_arc_length = int(propagation_arc.size)
         propagation_arc_duration_seconds = propagation_arc_length * time_step
 
-        if propagation_arc_length < segment_length:
+        if propagation_arc_length < minimum_segment_length_for_median_mean:
             if emit_warnings:
                 attainable_lowest_frequency_resolution_hz = 1.0 / propagation_arc_duration_seconds
                 start_index = int(propagation_arc[0])
@@ -164,8 +165,8 @@ def build_welch_estimation_segment_settings(
                     f"{warning_context} will skip propagation segment {arc_idx} "
                     f"(sample indices {start_index}-{end_index}, {propagation_arc_length} samples, "
                     f"{propagation_arc_duration_seconds:.1f} s) because it is shorter than the required "
-                    f"Welch segment duration of {requested_segment_duration_seconds:.1f} s "
-                    f"({segment_length} samples at dt={time_step:.1f} s, "
+                    f"required segment duration for the median-mean estimation of {minimum_segment_duration_for_median_mean_seconds:.1f} s "
+                    f"({segment_length} samples plus a stride of {segment_stride} samples at dt={time_step:.1f} s, "
                     f"lowest frequency resolution={lowest_frequency_resolution_hz:.6e} Hz). "
                     f"This propagation segment can support at most {propagation_arc_duration_seconds:.1f} s, "
                     f"which corresponds to an attainable lowest frequency resolution of "
@@ -286,6 +287,7 @@ def compute_weighted_average_psd_across_segments(
             propagation_arc_time_series,
             seg_len=segment_length,
             seg_stride=segment_stride,
+            avg_method="median-mean",
         )
 
         propagation_arc_frequencies = estimated_psd.sample_frequencies.numpy()
@@ -309,6 +311,90 @@ def compute_weighted_average_psd_across_segments(
         raise ValueError("No valid propagation arc is long enough for the requested Welch settings.")
 
     return frequency_grid, weighted_psd_sum / total_weight
+
+
+def compute_log_frequency_binned_psd(
+    frequencies: np.ndarray,
+    psd_values: np.ndarray,
+    bin_width_decades: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a PSD averaged within uniform log10-frequency bins."""
+
+    frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
+    psd_values = np.asarray(psd_values, dtype=float).reshape(-1)
+
+    if frequencies.shape != psd_values.shape:
+        raise ValueError("frequencies and the corresponding PSD values must have the same shape.")
+    if bin_width_decades <= 0.0:
+        raise ValueError("The bin width in decades must be positive.")
+
+    # Welch PSD estimates include the 0 Hz bin, which cannot be represented in log10-frequency space.
+    valid_samples_mask = np.isfinite(frequencies) & np.isfinite(psd_values) & (frequencies > 0.0)
+    if not np.any(valid_samples_mask):
+        raise ValueError(
+            "Log-frequency PSD binning requires at least one finite sample with positive frequency."
+        )
+
+    frequencies = frequencies[valid_samples_mask]
+    psd_values = psd_values[valid_samples_mask]
+
+    sort_indices = np.argsort(frequencies)
+    sorted_frequencies_input = frequencies[sort_indices]
+    sorted_psd_input = psd_values[sort_indices]
+
+    log_frequencies = np.log10(sorted_frequencies_input)
+    if np.isclose(log_frequencies[0], log_frequencies[-1]):
+        return (
+            np.array([sorted_frequencies_input[0]], dtype=float),
+            np.array([sorted_psd_input[0]], dtype=float),
+        )
+
+    log_frequency_bin_edges = np.arange(
+        log_frequencies[0],
+        log_frequencies[-1] + bin_width_decades,
+        bin_width_decades,
+    )
+    if log_frequency_bin_edges.size < 2:
+        log_frequency_bin_edges = np.array(
+            [log_frequencies[0], log_frequencies[-1]],
+            dtype=float,
+        )
+
+    smoothed_frequencies: list[float] = []
+    smoothed_psd_values: list[float] = []
+
+    for bin_idx, (bin_lower_edge, bin_upper_edge) in enumerate(
+        zip(log_frequency_bin_edges[:-1], log_frequency_bin_edges[1:])
+    ):
+        if bin_idx == log_frequency_bin_edges.size - 2:
+            samples_in_bin_mask = (
+                (log_frequencies >= bin_lower_edge)
+                & (log_frequencies <= bin_upper_edge)
+            )
+        else:
+            samples_in_bin_mask = (
+                (log_frequencies >= bin_lower_edge)
+                & (log_frequencies < bin_upper_edge)
+            )
+
+        if not np.any(samples_in_bin_mask):
+            continue
+
+        frequencies_in_bin = sorted_frequencies_input[samples_in_bin_mask]
+        psd_values_in_bin = sorted_psd_input[samples_in_bin_mask]
+
+        smoothed_frequencies.append(
+            float(np.mean(frequencies_in_bin))
+        )
+        smoothed_psd_values.append(float(np.mean(psd_values_in_bin)))
+
+    if not smoothed_frequencies:
+        raise RuntimeError("The log-frequency PSD binning produced no populated bins.")
+
+    return (
+        np.asarray(smoothed_frequencies, dtype=float),
+        np.asarray(smoothed_psd_values, dtype=float),
+    )
 
 
 def compute_root_mean_square_over_finite_values(values: np.ndarray) -> float:
@@ -422,16 +508,40 @@ def run_psd_estimation_parameter_sensitivity_analysis(
         )
 
     min_segment_length = minimum_segment_length_from_resolution
+    min_segment_stride = min_segment_length // 2
+    minimum_segment_length_for_median_mean = min_segment_length + min_segment_stride
+    if longest_valid_segment_length < minimum_segment_length_for_median_mean:
+        raise ValueError(
+            "No valid propagation segment is long enough to support Welch estimation median-mean averaging "
+            "at the requested lowest frequency resolution. "
+            f"The longest valid segment has {longest_valid_segment_length} samples, but at least "
+            f"{minimum_segment_length_for_median_mean} samples are required "
+            f"({min_segment_length} segment samples plus {min_segment_stride} stride samples)."
+        )
+
     max_segment_length = longest_valid_segment_length
     starting_segment_length = min_segment_length
-    starting_segment_stride = starting_segment_length // 2
+    starting_segment_stride = min_segment_stride
 
     rng = np.random.default_rng(seed)
     candidate_parameters_pairs = {(starting_segment_length, starting_segment_stride)}
 
+    max_sampling_attempts =  num_trials * 100
+    sampling_attempts = 0
     while len(candidate_parameters_pairs) < num_trials:
+        sampling_attempts += 1
+        if sampling_attempts > max_sampling_attempts:
+            break
+
         segment_length = int(rng.integers(min_segment_length, max_segment_length + 1))
         segment_stride = int(rng.integers(segment_length // 2, segment_length + 1))
+
+        if not any(
+            propagation_segment.size >= segment_length + segment_stride
+            for propagation_segment in valid_propagation_segments
+        ):
+            continue
+
         candidate_parameters_pairs.add((segment_length, segment_stride))
 
     records: list[dict[str, float]] = []
@@ -604,7 +714,7 @@ def propagate_observation_errors_to_lgds(
         target_lowest_frequency_resolution_hz=LOWEST_FREQUENCY_RESOLUTION_HZ,
         warning_context="KBR debiased range-noise Welch ASD estimation",
     )
-    estimated_frequencies_asd_kbr_range_noise_debiased, estimated_psd_kbr_range_noise_debiased = (
+    estimated_frequencies_asd_kbr_range_noise_debiased, estimated_values_psd_kbr_range_noise_debiased = (
         compute_weighted_average_psd_across_segments(
             values=kbr_range_noise_debiased,
             valid_propagation_segments_mask=valid_propagation_segments_mask,
@@ -612,11 +722,20 @@ def propagate_observation_errors_to_lgds(
             welch_segment_settings=kbr_debiased_range_noise_welch_segment_settings,
         )
     )
-    estimated_values_asd_kbr_range_noise_debiased = np.sqrt(estimated_psd_kbr_range_noise_debiased)
+    estimated_values_asd_kbr_range_noise_debiased = np.sqrt(estimated_values_psd_kbr_range_noise_debiased)
+    smoothed_frequencies_asd_kbr_range_noise_debiased, smoothed_values_psd_kbr_range_noise_debiased = (
+        compute_log_frequency_binned_psd(
+            frequencies=estimated_frequencies_asd_kbr_range_noise_debiased,
+            psd_values=estimated_values_psd_kbr_range_noise_debiased,
+        )
+    )
+    smoothed_values_asd_kbr_range_noise_debiased = np.sqrt(smoothed_values_psd_kbr_range_noise_debiased)
 
     plotter.plot_welch_estimated_asd(
         frequencies=estimated_frequencies_asd_kbr_range_noise_debiased,
         asd_values=estimated_values_asd_kbr_range_noise_debiased,
+        smoothed_frequencies=smoothed_frequencies_asd_kbr_range_noise_debiased,
+        smoothed_asd_values=smoothed_values_asd_kbr_range_noise_debiased,
         file_name="range_noise_debiased_welch_estimated_asd.png",
         ordinate_label=r"ASD [m Hz$^{-1/2}$]",
         title="KBR Range Noise (Debiased) ASD",
@@ -792,8 +911,27 @@ def propagate_observation_errors_to_lgds(
         file_name="grace_fo_range_rate_noise_asd_comparison.png",
         ordinate_label=r"ASD [m s$^{-1}$ Hz$^{-1/2}$]",
         title="Range-Rate Noise ASD: Numerical vs Analytical Differentiation",
-        estimated_label=r"ASD from Numerical Differentiation",
-        reference_label=r"ASD from Analytical Differentiation",
+        estimated_label=r"Numerical",
+        reference_label=r"Analytical",
+        x_limit_inf=1e-5,
+        x_limit_sup=1e-1,
+        reference_orbital_period_seconds=reference_orbital_period,
+    )
+    smoothed_range_rate_asd_frequencies, smoothed_range_rate_psd_values = compute_log_frequency_binned_psd(
+        frequencies=first_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        psd_values=first_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"] ** 2,
+    )
+    smoothed_range_rate_asd = np.sqrt(smoothed_range_rate_psd_values)
+    plotter.plot_welch_estimated_asd_comparison(
+        estimated_frequencies=first_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        estimated_asd_values=first_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"],
+        reference_frequencies=smoothed_range_rate_asd_frequencies,
+        reference_asd_values=smoothed_range_rate_asd,
+        file_name="grace_fo_range_rate_noise_estimated_smoothed_asd_comparison.png",
+        ordinate_label=r"ASD [m s$^{-1}$ Hz$^{-1/2}$]",
+        title="Range-Rate Noise ASD: Welch vs Log-Binned PSD Smoothing",
+        estimated_label="Welch Estimation",
+        reference_label="Log-Binned Smoothing",
         x_limit_inf=1e-5,
         x_limit_sup=1e-1,
         reference_orbital_period_seconds=reference_orbital_period,
@@ -806,8 +944,27 @@ def propagate_observation_errors_to_lgds(
         file_name="grace_fo_range_acceleration_noise_asd_comparison.png",
         ordinate_label=r"ASD [m s$^{-2}$ Hz$^{-1/2}$]",
         title="Range-Acceleration Noise ASD: Numerical vs Analytical Differentiation",
-        estimated_label=r"ASD from Numerical Differentiation",
-        reference_label=r"ASD from Analytical Differentiation",
+        estimated_label=r"Numerical",
+        reference_label=r"Analytical",
+        x_limit_inf=1e-5,
+        x_limit_sup=1e-1,
+        reference_orbital_period_seconds=reference_orbital_period,
+    )
+    smoothed_range_acceleration_frequencies, smoothed_range_acceleration_psd_values = compute_log_frequency_binned_psd(
+        frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        psd_values=second_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"] ** 2,
+    )
+    smoothed_range_acceleration_asd_values = np.sqrt(smoothed_range_acceleration_psd_values)
+    plotter.plot_welch_estimated_asd_comparison(
+        estimated_frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        estimated_asd_values=second_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"],
+        reference_frequencies=smoothed_range_acceleration_frequencies,
+        reference_asd_values=smoothed_range_acceleration_asd_values,
+        file_name="grace_fo_range_acceleration_noise_smoothed_asd_comparison.png",
+        ordinate_label=r"ASD [m s$^{-2}$ Hz$^{-1/2}$]",
+        title="Range-Acceleration Noise ASD: Welch vs Log-Binned PSD Smoothing",
+        estimated_label="Welch Estimation",
+        reference_label="Log-Binned Smoothing",
         x_limit_inf=1e-5,
         x_limit_sup=1e-1,
         reference_orbital_period_seconds=reference_orbital_period,
@@ -1014,10 +1171,17 @@ def propagate_observation_errors_to_lgds(
         return frequencies, np.sqrt(estimated_psd)
 
     lgd_error_frequencies, lgd_error_asd = estimate_amplitude_spectral_density(lgd_error)
+    smoothed_lgd_error_frequencies, smoothed_lgd_error_psd_values = compute_log_frequency_binned_psd(
+        frequencies=lgd_error_frequencies,
+        psd_values=lgd_error_asd ** 2,
+    )
+    smoothed_lgd_error_asd = np.sqrt(smoothed_lgd_error_psd_values)
 
     plotter.plot_lgd_error_propagation_asd(
         frequencies=lgd_error_frequencies,
         lgd_error_asd=lgd_error_asd,
+        smoothed_frequencies=smoothed_lgd_error_frequencies,
+        smoothed_lgd_error_asd=smoothed_lgd_error_asd,
         file_name="grace_fo_lgd_error_propagation_asd.png",
         reference_orbital_period_seconds=reference_orbital_period,
     )

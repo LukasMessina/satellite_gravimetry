@@ -50,7 +50,7 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 1, 1, 1, 0, 0).to_epoch() 
+simulation_end_epoch = DateTime(2019, 1, 5, 0, 0, 0).to_epoch() 
 time_step = 5.0  # seconds
 # Add a small epoch buffer so the pointing-angle time series still spans the
 # full simulation window if orbit-phasing maneuvers introduce slight timing offsets.
@@ -341,12 +341,16 @@ grace_fo_full_panelled_body = dynamics.environment_setup.vehicle_systems.full_pa
 body_settings.get("GRACE C").vehicle_shape_settings = grace_fo_full_panelled_body
 body_settings.get("GRACE D").vehicle_shape_settings = grace_fo_full_panelled_body
 
+pixel_source_dict = dict(Sun=100)
+
 grace_c_target_settings = dynamics.environment_setup.radiation_pressure.panelled_radiation_target(
-    grace_c_per_source_occulting_bodies
+    grace_c_per_source_occulting_bodies,
+    pixel_source_dict,
 )
 
 grace_d_target_settings = dynamics.environment_setup.radiation_pressure.panelled_radiation_target(
-    grace_d_per_source_occulting_bodies
+    grace_d_per_source_occulting_bodies,
+    pixel_source_dict
 )
 
 body_settings.get("GRACE C").radiation_pressure_target_settings = (
@@ -358,7 +362,9 @@ body_settings.get("GRACE D").radiation_pressure_target_settings = (
 )
 
 aero_coefficients_settings = dynamics.environment_setup.aerodynamic_coefficients.constant_variable_cross_section(
-    [drag_coefficient, 0.0, 0.0])
+    [drag_coefficient, 0.0, 0.0],
+    maximum_number_of_pixels=100,
+    )
 
 # Add the aerodynamic interface to the body settings
 body_settings.get("GRACE C").aerodynamic_coefficient_settings = aero_coefficients_settings
@@ -460,7 +466,7 @@ acceleration_settings_grace_d = {
                 use_lense_thirring,
                 use_de_sitter,
                 de_sitter_central_body="Sun",
-                lense_thirring_angular_momentum=np.array([0.0, 0.0, 9.80e8]), # 
+                lense_thirring_angular_momentum=earth_lense_thirring_angular_momentum, 
            ),
            dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(200, 200),  # Default Max Degree: 200, Max Order: 200
            dynamics.propagation_setup.acceleration.aerodynamic(),
@@ -488,6 +494,8 @@ acceleration_settings_grace_c = {
             use_lense_thirring,
             use_de_sitter,
             de_sitter_central_body="Sun",
+            lense_thirring_angular_momentum=earth_lense_thirring_angular_momentum, 
+
         ),
         dynamics.propagation_setup.acceleration.spherical_harmonic_gravity(200, 200),  # Default Max Degree: 200, Max Order: 200
         dynamics.propagation_setup.acceleration.aerodynamic(),
@@ -1014,21 +1022,60 @@ gc.collect()
 # ACCELEROMETER SATELLITE FRAME MEASUREMENT SIMULATION
 # =========================================================
 
+mean_full_scale_factor_matrix = {
+    "GRACE C": np.array([
+                        [0.956, -0.003, -0.007],
+                        [-0.004, 0.794, -0.024],
+                        [-0.003, 0.004, 0.959]
+                        ], dtype=float),
+    "GRACE D": np.array([
+                        [0.942, -0.005, -0.001],
+                        [-0.009, 0.778, -0.012],
+                        [0.006, -0.006, 0.954]
+                        ], dtype=float),
+}
+
+std_mean_full_scale_factor_matrix = {
+    "GRACE C": np.array([
+                        [0.025, 0.012, 0.019],
+                        [0.107, 0.398, 0.303],
+                        [0.058, 0.029, 0.046]
+                        ], dtype=float),
+    "GRACE D": np.array([
+                        [0.025, 0.013, 0.019],
+                        [0.114, 0.449, 0.331],
+                        [0.057, 0.032, 0.047]
+                        ], dtype=float),
+}
+
+offset_accelerometer_biases = {
+    "GRACE C": np.array([-1.1e-4, 2.8e-3, -5.1e-4], dtype=float) ,
+    "GRACE D": np.array([-5.5e-5, 8.7e-4, -7.8e-5], dtype=float),
+}
+
+mean_residual_accelerometer_biases = {
+    "GRACE C": np.array([-2.26e-8, -7.39e-8, -3.26e-8], dtype=float),
+    "GRACE D": np.array([-1.92e-8, -6.75e-7, -7.17e-8], dtype=float) ,
+}
+
+std_accelerometer_biases = {
+    "GRACE C": np.array([1.53e-8, 3.90e-7, 1.63e-8], dtype=float),
+    "GRACE D": np.array([1.26e-8, 6e-7, 3.15e-8], dtype=float),
+}
+
 accelerometer_observations_sf = NoiseGenerator.generate_accelerometer_observations(
     plotter=plotter,
     dependent_variables_array=dependent_variables_array,
     time_step=time_step,
-    accelerometer_scale_factor_matrix_diagonal_elements={
-        "GRACE C": np.array([0.9595, 0.9797, 0.9485], dtype=float),
-        "GRACE D": np.array([0.9465, 0.9842, 0.9303], dtype=float),
-    },
+    mean_full_scale_factor_matrix=mean_full_scale_factor_matrix,
+    std_mean_full_scale_factor_matrix=std_mean_full_scale_factor_matrix,
     accelerometer_biases={
-        "GRACE C": np.array([-1.106, 27.042, -0.5486], dtype=float) * 1e-6,
-        "GRACE D": np.array([-0.5647, 7.5101, -0.8602], dtype=float) * 1e-6,
+        "GRACE C": offset_accelerometer_biases["GRACE C"] + mean_residual_accelerometer_biases["GRACE C"],
+        "GRACE D": offset_accelerometer_biases["GRACE D"] + mean_residual_accelerometer_biases["GRACE D"],
     },
+    std_accelerometer_biases=std_accelerometer_biases,
     seed=(300, 301),
     noise_model_version=noise_model_version,
-    misalignment_error=0.3e-3,       # [rad]
 )
 del noise_model_version
 gc.collect()

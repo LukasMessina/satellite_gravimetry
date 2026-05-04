@@ -158,6 +158,7 @@ class NoiseGenerator:
                     component_time_series,
                     seg_len=segment_len,
                     seg_stride=seg_stride,
+                    avg_method="median-mean",
                 )
                 estimated_frequencies.append(estimated_psd.sample_frequencies.numpy())
                 estimated_psd_values.append(estimated_psd.numpy())
@@ -189,7 +190,7 @@ class NoiseGenerator:
                 ordinate_label=r"PSD [m$^2$ Hz$^{-1}$]",
                 title="Absolute Inertial Position Error PSD",
                 x_limit_inf=1e-5,
-                x_limit_sup=1e-2,
+                x_limit_sup=1e-1,
             )
 
         del rtn_position_errors
@@ -286,7 +287,12 @@ class NoiseGenerator:
             # 50% overlap
             seg_stride = segment_len // 2
 
-            estimated_psd = psd.welch(angle_time_series, seg_len=segment_len, seg_stride=seg_stride)
+            estimated_psd = psd.welch(
+                angle_time_series, 
+                seg_len=segment_len, 
+                seg_stride=seg_stride,
+                avg_method="median-mean",
+                )
 
             # Extract frequency and PSD values from estimated PSD
             estimated_frequencies = estimated_psd.sample_frequencies.numpy()
@@ -362,6 +368,11 @@ class NoiseGenerator:
             r"$\tilde{\theta}_y$ [rad]",
             r"$\tilde{\theta}_z$ [rad]",
             r"$\tilde{\theta}_x$ [rad]"
+        ]
+        angles_with_error_symbol_labels = [
+            r"$\tilde{\theta}_Y$",
+            r"$\tilde{\theta}_Z$",
+            r"$\tilde{\theta}_X$",
         ]
         asd_spectrum_angles_noise_labels = [
             rf"$\mathrm{{ASD}}_{{\delta\theta,x}}\ [\mathrm{{rad}}\ \mathrm{{Hz}}^{{-1/2}}]$",
@@ -458,6 +469,7 @@ class NoiseGenerator:
             # Finally, equivalent LOSF roll, pitch, and yaw angles are extracted from the resulting rotation matrix
             # and added to the nominal pointing angles following the Darbeheshti measurement model.
 
+            delta_f = min(1e-6, delta_f)
             frequency_interval = [1e-12, 1e-1 + 10 * delta_f]  # Hz
             frequencies_uniform_span = np.arange(frequency_interval[0], frequency_interval[1], delta_f)
 
@@ -528,6 +540,7 @@ class NoiseGenerator:
                     noise_time_series,
                     seg_len=segment_len,
                     seg_stride=seg_stride,
+                    avg_method="median-mean",
                 )
 
                 estimated_frequencies = estimated_psd.sample_frequencies.numpy()
@@ -697,6 +710,12 @@ class NoiseGenerator:
                     noisy_attitude_time_series[angle],
                     file_name=f"{satellite_label}_total_noisy_{angle}_angle_time_series.png",
                     ordinate_label=angles_with_error_labels[idx],
+                    ordinate_symbol_label=angles_with_error_symbol_labels[idx],
+                    ordinate_units_label="[rad]",
+                    split_label_x=-0.24,
+                    split_symbol_y=0.43,
+                    split_units_y=0.59,
+                    use_scientific_yaxis=True,
                 )
 
         return noisy_attitude_time_series
@@ -753,7 +772,12 @@ class NoiseGenerator:
             # 50% overlap
             seg_stride = segment_len // 2
 
-            estimated_psd = psd.welch(noise_time_series, seg_len=segment_len, seg_stride=seg_stride)
+            estimated_psd = psd.welch(
+                noise_time_series,
+                seg_len=segment_len,
+                seg_stride=seg_stride,
+                avg_method="median-mean",
+                )
 
             # Extract frequency and PSD values from estimated PSD
             estimated_frequencies = estimated_psd.sample_frequencies.numpy()
@@ -1096,18 +1120,24 @@ class NoiseGenerator:
         plotter: Plotter,
         dependent_variables_array: np.ndarray,
         time_step: float,
-        accelerometer_scale_factor_matrix_diagonal_elements: dict[str, np.ndarray],
+        mean_full_scale_factor_matrix: dict[str, np.ndarray],
+        std_mean_full_scale_factor_matrix: dict[str, np.ndarray],
         accelerometer_biases: dict[str, np.ndarray],
+        std_accelerometer_biases: dict[str, np.ndarray],
         seed: tuple[int, int],
         noise_model_version: int,
-        misalignment_error: float = 0.3e-3,      # radians
         ) -> dict[str, np.ndarray]:
         """
-        Generate simulated accelerometer measurements based on the error model
+        Generate simulated accelerometer measurements based on a combination of the error models
         presented in:
 
         Kim, J. (2000). *Simulation study of a low-low satellite-to-satellite tracking mission*
         (Doctoral dissertation, The University of Texas at Austin).
+
+        Teixeira da Encarnação, J., Save, H., Tapley, B., & Rim, H.-J. (2020).
+        Accelerometer Parameterization and the Quality of Gravity Recovery and
+        Climate Experiment Solutions. Journal of Spacecraft and Rockets.
+        https://doi.org/10.2514/1.A34639
 
         This function reproduces an accelerometer observation model by
         combining the nominal non-gravitational acceleration with relevant instrument
@@ -1141,19 +1171,6 @@ class NoiseGenerator:
         }
 
         del dependent_variables_array
-
-        small_angular_rotation_vector = np.full(3, misalignment_error, dtype=float)
-
-        # Having applied the small angle approximation, the misalignment matrix
-        # is independent of the order of rotations.
-        misalignment_matrix_sf_to_acc = np.array(
-            [
-                [1.0, small_angular_rotation_vector[2], -small_angular_rotation_vector[1]],
-                [-small_angular_rotation_vector[2], 1.0, small_angular_rotation_vector[0]],
-                [small_angular_rotation_vector[1], -small_angular_rotation_vector[0], 1.0],
-            ],
-            dtype=float,
-        )
 
         delta_f = 1.0 / (num_epochs * time_step)
         # Create a regular frequency span
@@ -1192,32 +1209,22 @@ class NoiseGenerator:
         accelerometer_observations_sf = {}
 
         for satellite_idx, satellite_label in enumerate(satellite_labels):
-            scale_factors_vector = np.asarray(
-                accelerometer_scale_factor_matrix_diagonal_elements[satellite_label],
-                dtype=float,
-            )
-            bias_vector = np.asarray(
-                accelerometer_biases[satellite_label],
-                dtype=float,
-            )
-
-            if scale_factors_vector.shape != (3,) or bias_vector.shape != (3,):
+            
+            full_scale_factor_matrix = mean_full_scale_factor_matrix[satellite_label] + \
+                 np.random.default_rng(seed[satellite_idx]).normal(0, std_mean_full_scale_factor_matrix[satellite_label], size=(3, 3))
+     
+            bias_vector = accelerometer_biases[satellite_label] + \
+                np.random.default_rng(seed[satellite_idx] + 100).normal(0, std_accelerometer_biases[satellite_label], size=3)
+            
+            if full_scale_factor_matrix.shape != (3, 3) or bias_vector.shape != (3,):
                 raise ValueError(
-                    f"Scale factor matrix diagonal elements and biases for {satellite_label} must have shape (3,)."
+                    f"Scale factor matrix diagonal elements and biases for {satellite_label} must have shape (3, 3) and (3,) respectively."
                 )
 
             non_gravitational_accelerations_sf = transform_vector_history_inertial_to_satellite_frame(
                 non_gravitational_accelerations_j2000[satellite_label],
                 rotation_j2000_to_sf[satellite_label],
             )
-
-            accelerations_accelerometer_frame = np.einsum(
-                "ij,nj->ni",
-                misalignment_matrix_sf_to_acc,
-                non_gravitational_accelerations_sf,
-            )
-
-            scale_factor_matrix = np.diag(scale_factors_vector)
 
             analytical_asds = (
                 sensitive_axis_asd,
@@ -1281,6 +1288,7 @@ class NoiseGenerator:
                         component_time_series,
                         seg_len=segment_len,
                         seg_stride=seg_stride,
+                        avg_method="median-mean",
                     )
                     estimated_frequencies.append(estimated_psd.sample_frequencies.numpy())
                     estimated_psd_values.append(estimated_psd.numpy())
@@ -1313,10 +1321,9 @@ class NoiseGenerator:
             accelerometer_observations_sf[satellite_label] = (
                 np.einsum(
                 "ij,nj->ni",
-                scale_factor_matrix,
-                accelerations_accelerometer_frame,
+                np.linalg.inv(full_scale_factor_matrix),
+                (non_gravitational_accelerations_sf - bias_vector),
                 ) 
-                + bias_vector
                 + random_noise_history
             )
 
@@ -1337,11 +1344,8 @@ class NoiseGenerator:
 
             # Release per-satellite temporaries once the final observation history
             # has been stored and the diagnostic plots have been produced.
-            del scale_factors_vector
             del bias_vector
             del non_gravitational_accelerations_sf
-            del accelerations_accelerometer_frame
-            del scale_factor_matrix
             del analytical_asds
             del component_noise_time_series_history
             del random_noise_history
@@ -1355,8 +1359,6 @@ class NoiseGenerator:
 
         del non_gravitational_accelerations_j2000
         del rotation_j2000_to_sf
-        del small_angular_rotation_vector
-        del misalignment_matrix_sf_to_acc
         del delta_f
         del frequency_interval
         del frequencies_uniform_span
