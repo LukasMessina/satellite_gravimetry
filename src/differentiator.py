@@ -1,4 +1,7 @@
+import h5py
+
 from typing import Any
+from pathlib import Path
 
 from matplotlib.pylab import seed
 import numpy as np
@@ -11,6 +14,38 @@ from plotter import Plotter
 
 # Define constants
 LOWEST_FREQUENCY_RESOLUTION_HZ = 5e-6
+
+
+def save_to_hdf5(
+    noise_model_version: int,
+    file_name: str,
+    frequencies: np.ndarray,
+    asd_values: np.ndarray,
+    spectrum_name: str,
+    ordinate_label: str,
+) -> Path:
+    """Save a frequency/ASD spectrum under the versioned output directory."""
+
+    frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
+    asd_values = np.asarray(asd_values, dtype=float).reshape(-1)
+
+    if frequencies.shape != asd_values.shape:
+        raise ValueError("frequencies and asd_values must have the same shape.")
+
+    output_directory = Path(f"./output/spectra/version_{noise_model_version}")
+    output_directory.mkdir(parents=True, exist_ok=True)
+    file_path = output_directory / file_name
+
+    with h5py.File(file_path, "w") as h5_file:
+        h5_file.create_dataset("frequencies", data=frequencies)
+        h5_file.create_dataset("asd", data=asd_values)
+        h5_file.attrs["spectrum_name"] = spectrum_name
+        h5_file.attrs["frequency_units"] = "Hz"
+        h5_file.attrs["asd_units"] = ordinate_label
+        h5_file.attrs["noise_model_version"] = int(noise_model_version)
+
+    return file_path
+
 
 def compute_acceleration(
         position: np.ndarray,
@@ -627,6 +662,7 @@ def propagate_observation_errors_to_lgds(
     noisy_attitude_time_series: dict[str, dict[str, types.TimeSeries]],
     guidance_log: list[dict[str, Any]] | None,
     plotter: Plotter,
+    noise_model_version: int,
     reference_orbital_period: float | None = None,
     accuracy_orders: list[int] | None = None,
     sensitivity_analysis_runs: int = 10000,
@@ -723,6 +759,14 @@ def propagate_observation_errors_to_lgds(
         )
     )
     estimated_values_asd_kbr_range_noise_debiased = np.sqrt(estimated_values_psd_kbr_range_noise_debiased)
+    save_to_hdf5(
+        noise_model_version=noise_model_version,
+        file_name="range_error_debiased_asd.h5",
+        frequencies=estimated_frequencies_asd_kbr_range_noise_debiased,
+        asd_values=estimated_values_asd_kbr_range_noise_debiased,
+        spectrum_name="KBR range error debiased ASD",
+        ordinate_label="m Hz^(-1/2)",
+    )
     smoothed_frequencies_asd_kbr_range_noise_debiased, smoothed_values_psd_kbr_range_noise_debiased = (
         compute_log_frequency_binned_psd(
             frequencies=estimated_frequencies_asd_kbr_range_noise_debiased,
@@ -890,6 +934,23 @@ def propagate_observation_errors_to_lgds(
         minimum_log_rms_misfit_frequency_hz=minimum_log_rms_misfit_frequency_hz,
     )
 
+    save_to_hdf5(
+        noise_model_version=noise_model_version,
+        file_name="range_rate_error_analytical_differentiated_asd.h5",
+        frequencies=first_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        asd_values=first_derivative_spectral_sensitivity_analysis["best_record"]["analytical_differentiated_asd"],
+        spectrum_name="Range-rate error analytical differentiated ASD",
+        ordinate_label="m s^(-1) Hz^(-1/2)",
+    )
+    save_to_hdf5(
+        noise_model_version=noise_model_version,
+        file_name="range_acceleration_error_analytical_differentiated_asd.h5",
+        frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        asd_values=second_derivative_spectral_sensitivity_analysis["best_record"]["analytical_differentiated_asd"],
+        spectrum_name="Range-acceleration error analytical differentiated ASD",
+        ordinate_label="m s^(-2) Hz^(-1/2)",
+    )
+
     plotter.plot_spectral_sensitivity_analysis_results(
         spectral_sensitivity_analysis=first_derivative_spectral_sensitivity_analysis["records"],
         file_name="grace_fo_range_rate_spectral_sensitivity_analysis.png",
@@ -917,25 +978,34 @@ def propagate_observation_errors_to_lgds(
         x_limit_sup=1e-1,
         reference_orbital_period_seconds=reference_orbital_period,
     )
-    smoothed_range_rate_asd_frequencies, smoothed_range_rate_psd_values = compute_log_frequency_binned_psd(
+
+    # Smooth the numerical differentiation derived range rate ASD
+    smoothed_numerical_range_rate_asd_frequencies, smoothed_numerical_range_rate_psd_values = compute_log_frequency_binned_psd(
         frequencies=first_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
         psd_values=first_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"] ** 2,
     )
-    smoothed_range_rate_asd = np.sqrt(smoothed_range_rate_psd_values)
+    smoothed_numerical_range_rate_asd = np.sqrt(smoothed_numerical_range_rate_psd_values)
+    # Smooth the analytical differentiation derived range rate ASD
+    smoothed_analytical_range_rate_asd_frequencies, smoothed_analytical_range_rate_psd_values = compute_log_frequency_binned_psd(
+        frequencies=first_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        psd_values=first_derivative_spectral_sensitivity_analysis["best_record"]["analytical_differentiated_asd"] ** 2,
+    )
+    smoothed_analytical_range_rate_asd = np.sqrt(smoothed_analytical_range_rate_psd_values)
     plotter.plot_welch_estimated_asd_comparison(
-        estimated_frequencies=first_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
-        estimated_asd_values=first_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"],
-        reference_frequencies=smoothed_range_rate_asd_frequencies,
-        reference_asd_values=smoothed_range_rate_asd,
+        estimated_frequencies=smoothed_analytical_range_rate_asd_frequencies,
+        estimated_asd_values=smoothed_analytical_range_rate_asd,
+        reference_frequencies=smoothed_numerical_range_rate_asd_frequencies,
+        reference_asd_values=smoothed_numerical_range_rate_asd,
         file_name="grace_fo_range_rate_noise_estimated_smoothed_asd_comparison.png",
         ordinate_label=r"ASD [m s$^{-1}$ Hz$^{-1/2}$]",
         title="Range-Rate Noise ASD: Welch vs Log-Binned PSD Smoothing",
-        estimated_label="Welch Estimation",
-        reference_label="Log-Binned Smoothing",
+        estimated_label="Analytical",
+        reference_label="Numerical",
         x_limit_inf=1e-5,
         x_limit_sup=1e-1,
         reference_orbital_period_seconds=reference_orbital_period,
     )
+
     plotter.plot_welch_estimated_asd_comparison(
         estimated_frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
         estimated_asd_values=second_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"],
@@ -950,21 +1020,31 @@ def propagate_observation_errors_to_lgds(
         x_limit_sup=1e-1,
         reference_orbital_period_seconds=reference_orbital_period,
     )
-    smoothed_range_acceleration_frequencies, smoothed_range_acceleration_psd_values = compute_log_frequency_binned_psd(
+
+    # Smooth the numerical differentiation derived range acceleration ASD
+    smoothed_numerical_range_acceleration_frequencies, smoothed_numerical_range_acceleration_psd_values = compute_log_frequency_binned_psd(
         frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
         psd_values=second_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"] ** 2,
     )
-    smoothed_range_acceleration_asd_values = np.sqrt(smoothed_range_acceleration_psd_values)
+    smoothed_numerical_range_acceleration_asd_values = np.sqrt(smoothed_numerical_range_acceleration_psd_values)
+
+    # Smooth the analytical differentiation derived range acceleration ASD
+    smoothed_analytical_range_acceleration_frequencies, smoothed_analytical_range_acceleration_psd_values = compute_log_frequency_binned_psd(
+        frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
+        psd_values=second_derivative_spectral_sensitivity_analysis["best_record"]["analytical_differentiated_asd"] ** 2,
+    )
+    smoothed_analytical_range_acceleration_asd = np.sqrt(smoothed_analytical_range_acceleration_psd_values)
+
     plotter.plot_welch_estimated_asd_comparison(
-        estimated_frequencies=second_derivative_spectral_sensitivity_analysis["best_record"]["frequencies"],
-        estimated_asd_values=second_derivative_spectral_sensitivity_analysis["best_record"]["numerical_differentiated_asd"],
-        reference_frequencies=smoothed_range_acceleration_frequencies,
-        reference_asd_values=smoothed_range_acceleration_asd_values,
+        estimated_frequencies=smoothed_analytical_range_acceleration_frequencies,
+        estimated_asd_values=smoothed_analytical_range_acceleration_asd,
+        reference_frequencies=smoothed_numerical_range_acceleration_frequencies,
+        reference_asd_values=smoothed_numerical_range_acceleration_asd_values,
         file_name="grace_fo_range_acceleration_noise_smoothed_asd_comparison.png",
         ordinate_label=r"ASD [m s$^{-2}$ Hz$^{-1/2}$]",
         title="Range-Acceleration Noise ASD: Welch vs Log-Binned PSD Smoothing",
-        estimated_label="Welch Estimation",
-        reference_label="Log-Binned Smoothing",
+        estimated_label="Analytical",
+        reference_label="Numerical",
         x_limit_inf=1e-5,
         x_limit_sup=1e-1,
         reference_orbital_period_seconds=reference_orbital_period,
@@ -1171,6 +1251,14 @@ def propagate_observation_errors_to_lgds(
         return frequencies, np.sqrt(estimated_psd)
 
     lgd_error_frequencies, lgd_error_asd = estimate_amplitude_spectral_density(lgd_error)
+    save_to_hdf5(
+        noise_model_version=noise_model_version,
+        file_name="lgd_error_asd.h5",
+        frequencies=lgd_error_frequencies,
+        asd_values=lgd_error_asd,
+        spectrum_name="LGD error ASD",
+        ordinate_label="m s^(-2) Hz^(-1/2)",
+    )
     smoothed_lgd_error_frequencies, smoothed_lgd_error_psd_values = compute_log_frequency_binned_psd(
         frequencies=lgd_error_frequencies,
         psd_values=lgd_error_asd ** 2,

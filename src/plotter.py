@@ -1,8 +1,10 @@
 import numpy as np
 import json
+import os
 
 
 from pathlib import Path
+
 from matplotlib.lines import Line2D
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.ticker import FixedFormatter, FixedLocator, FuncFormatter, ScalarFormatter
@@ -1768,6 +1770,49 @@ class Plotter:
             ax=ax,
             reference_orbital_period_seconds=reference_orbital_period_seconds,
         )
+
+        fig.tight_layout()
+        fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)
+        plt.close(fig)
+
+    def plot_noise_version_asd_absolute_difference(
+        self,
+        frequencies: np.ndarray,
+        absolute_difference: np.ndarray,
+        file_name: str,
+        difference_label: str,
+        version_a: int,
+        version_b: int,
+    ) -> None:
+        """Plot the absolute ASD difference between two saved noise-model spectra."""
+
+        frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
+        absolute_difference = np.asarray(absolute_difference, dtype=float).reshape(-1)
+
+        if frequencies.shape != absolute_difference.shape:
+            raise ValueError("frequencies and absolute_difference must have the same shape.")
+
+        valid_mask = np.isfinite(frequencies) & np.isfinite(absolute_difference) & (frequencies > 0.0)
+        if not np.any(valid_mask):
+            raise ValueError("At least one finite positive-frequency difference sample is required for plotting.")
+
+        frequencies = frequencies[valid_mask]
+        absolute_difference = absolute_difference[valid_mask]
+        positive_floor = np.finfo(float).tiny
+
+        fig = plt.figure(figsize=self._get_single_panel_size())
+        ax = fig.add_subplot(111)
+        ax.loglog(
+            frequencies,
+            np.maximum(absolute_difference, positive_floor),
+            color=RED,
+            linewidth=2.0,
+        )
+
+        # ax.set_title(title)
+        ax.set_xlabel("Frequency [Hz]")
+        ax.set_ylabel(difference_label)
+        self._style_axes(ax)
 
         fig.tight_layout()
         fig.savefig(self.output_path / file_name, bbox_inches="tight", dpi=300)

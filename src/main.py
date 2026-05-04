@@ -50,7 +50,7 @@ noise_model_version = get_noise_model_version()
 ###################################################################
 
 simulation_start_epoch = DateTime(2019, 1, 1, 0, 0, 0).to_epoch()
-simulation_end_epoch = DateTime(2019, 1, 5, 0, 0, 0).to_epoch() 
+simulation_end_epoch = DateTime(2019, 2, 21, 0, 0, 0).to_epoch()
 time_step = 5.0  # seconds
 # Add a small epoch buffer so the pointing-angle time series still spans the
 # full simulation window if orbit-phasing maneuvers introduce slight timing offsets.
@@ -1077,7 +1077,6 @@ accelerometer_observations_sf = NoiseGenerator.generate_accelerometer_observatio
     seed=(300, 301),
     noise_model_version=noise_model_version,
 )
-del noise_model_version
 gc.collect()
 
 # =========================================================
@@ -1097,6 +1096,7 @@ propagate_observation_errors_to_lgds(
     noisy_attitude_time_series=noisy_attitude_time_series,
     guidance_log=guidance_log,
     plotter=plotter,
+    noise_model_version=noise_model_version,
     reference_orbital_period=mean_grace_fo_orbital_period,
 )
 
@@ -1109,5 +1109,6 @@ del grace_fo_velocity_data
 del guidance_log
 del kbr_range_noise
 del mean_grace_fo_orbital_period
+del noise_model_version
 del noisy_attitude_time_series
 gc.collect()
