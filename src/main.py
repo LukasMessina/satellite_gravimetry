@@ -341,7 +341,7 @@ grace_fo_full_panelled_body = dynamics.environment_setup.vehicle_systems.full_pa
 body_settings.get("GRACE C").vehicle_shape_settings = grace_fo_full_panelled_body
 body_settings.get("GRACE D").vehicle_shape_settings = grace_fo_full_panelled_body
 
-pixel_source_dict = dict(Sun=100)
+pixel_source_dict = dict(Sun=10)
 
 grace_c_target_settings = dynamics.environment_setup.radiation_pressure.panelled_radiation_target(
     grace_c_per_source_occulting_bodies,
@@ -363,7 +363,7 @@ body_settings.get("GRACE D").radiation_pressure_target_settings = (
 
 aero_coefficients_settings = dynamics.environment_setup.aerodynamic_coefficients.constant_variable_cross_section(
     [drag_coefficient, 0.0, 0.0],
-    maximum_number_of_pixels=100,
+    maximum_number_of_pixels=10,
     )
 
 # Add the aerodynamic interface to the body settings

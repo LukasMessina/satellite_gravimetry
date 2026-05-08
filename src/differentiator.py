@@ -195,18 +195,18 @@ def build_welch_estimation_segment_settings(
                 attainable_lowest_frequency_resolution_hz = 1.0 / propagation_arc_duration_seconds
                 start_index = int(propagation_arc[0])
                 end_index = int(propagation_arc[-1])
-                print(
-                    "\nWARNING: "
-                    f"{warning_context} will skip propagation segment {arc_idx} "
-                    f"(sample indices {start_index}-{end_index}, {propagation_arc_length} samples, "
-                    f"{propagation_arc_duration_seconds:.1f} s) because it is shorter than the required "
-                    f"required segment duration for the median-mean estimation of {minimum_segment_duration_for_median_mean_seconds:.1f} s "
-                    f"({segment_length} samples plus a stride of {segment_stride} samples at dt={time_step:.1f} s, "
-                    f"lowest frequency resolution={lowest_frequency_resolution_hz:.6e} Hz). "
-                    f"This propagation segment can support at most {propagation_arc_duration_seconds:.1f} s, "
-                    f"which corresponds to an attainable lowest frequency resolution of "
-                    f"{attainable_lowest_frequency_resolution_hz:.6e} Hz.\n"
-                )
+                # print(
+                #     "\nWARNING: "
+                #     f"{warning_context} will skip propagation segment {arc_idx} "
+                #     f"(sample indices {start_index}-{end_index}, {propagation_arc_length} samples, "
+                #     f"{propagation_arc_duration_seconds:.1f} s) because it is shorter than the required "
+                #     f"required segment duration for the median-mean estimation of {minimum_segment_duration_for_median_mean_seconds:.1f} s "
+                #     f"({segment_length} samples plus a stride of {segment_stride} samples at dt={time_step:.1f} s, "
+                #     f"lowest frequency resolution={lowest_frequency_resolution_hz:.6e} Hz). "
+                #     f"This propagation segment can support at most {propagation_arc_duration_seconds:.1f} s, "
+                #     f"which corresponds to an attainable lowest frequency resolution of "
+                #     f"{attainable_lowest_frequency_resolution_hz:.6e} Hz.\n"
+                # )
             continue
 
         welch_segment_settings.append(

@@ -1812,6 +1812,8 @@ class Plotter:
         # ax.set_title(title)
         ax.set_xlabel("Frequency [Hz]")
         ax.set_ylabel(difference_label)
+        ax.set_xlim(1e-5, 1e-1)
+
         self._style_axes(ax)
 
         fig.tight_layout()
