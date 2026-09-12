@@ -1,7 +1,5 @@
 output/plots
 kernels/
-.vscode/
 src/__pycache__/
 *.pyc
 *:Zone.Identifier
-data/grace_fo_l1b_ascii_grav_jpl_rl04_2019_01_01_2019_02_01/
