@@ -14,18 +14,15 @@ from pathlib import Path
 import numpy as np
 from orbit_simulator import (
     OrbitalElements,
-    get_final_state_vectors,
-    restructure_vector_history,
-    create_time_termination_settings,
-    propagate_translational_arc,
-    create_nominal_termination_settings,
+    propagate_orbits,
 )
 from plotter import Plotter
 from noise_generator import NoiseGenerator
 from environment_customizer import EnvironmentCustomizer
 from guidance import Guidance
-from helpers import get_mean_orbital_period, get_noise_model_version
+from helpers import get_noise_model_version
 from differentiator import propagate_observation_errors_to_lgds
+from propagation_results_cache import PropagationResultsCache
 
 # Load tudatpy modules
 from tudatpy.interface import spice
@@ -165,14 +162,13 @@ grace_d_custom_rotation_matrix_callable = EnvironmentCustomizer.create_custom_sp
 
 # The initial state vectors of the GRACE-FO satellites are defined based
 # on its TLEs at the simulation epoch, which are obtained from space-track.org
-grace_c_tle = dynamics.environment_setup.ephemeris.sgp4(
-    "1 43476U 18047A   18365.89673225 +.00000266 +00000-0 +96631-5 0  9993",
-    "2 43476 088.9970 209.2025 0019272 138.9449 221.3254 15.23792965033965"
-)
-grace_d_tle = dynamics.environment_setup.ephemeris.sgp4(
-    "1 43477U 18047B   18365.89702718 +.00000263 +00000-0 +95755-5 0  9997",
-    "2 43477 088.9971 209.2044 0019074 138.5411 221.7288 15.23793300033968"
-)
+grace_c_tle_line1 = "1 43476U 18047A   18365.89673225 +.00000266 +00000-0 +96631-5 0  9993"
+grace_c_tle_line2 = "2 43476 088.9970 209.2025 0019272 138.9449 221.3254 15.23792965033965"
+grace_d_tle_line1 = "1 43477U 18047B   18365.89702718 +.00000263 +00000-0 +95755-5 0  9997"
+grace_d_tle_line2 = "2 43477 088.9971 209.2044 0019074 138.5411 221.7288 15.23793300033968"
+
+grace_c_tle = dynamics.environment_setup.ephemeris.sgp4(grace_c_tle_line1, grace_c_tle_line2)
+grace_d_tle = dynamics.environment_setup.ephemeris.sgp4(grace_d_tle_line1, grace_d_tle_line2)
 
 grace_c_ephemeris = dynamics.environment_setup.create_body_ephemeris(grace_c_tle, "GRACE C")
 grace_d_ephemeris = dynamics.environment_setup.create_body_ephemeris(grace_d_tle, "GRACE D")
@@ -192,11 +188,16 @@ initial_states = np.hstack((grace_c_initial_state, grace_d_initial_state))
 #
 ###################################################################
 
+spice_kernel_paths = [
+    Path("./kernels/nep105.bsp"),
+    Path("./kernels/plu060.bsp"),
+    Path("./kernels/ura182.bsp"),
+    Path("./kernels/gm_de440.pck"),
+]
+
 spice.load_standard_kernels()
-spice.load_kernel("./kernels/nep105.bsp")
-spice.load_kernel("./kernels/plu060.bsp")
-spice.load_kernel("./kernels/ura182.bsp")
-spice.load_kernel("./kernels/gm_de440.pck")
+for path in spice_kernel_paths:
+    spice.load_kernel(str(path))
 
 # Vehicle configuration parameters
 # TODO: Improve the drag and solar radiation pressure modelling to match GRACE-FO specifications.
@@ -326,8 +327,10 @@ grace_fo_reradiation_settings = {
 
 grace_fo_frame_origin = np.array([0.0, 0.0, 0.0])  # [m], origin of the spacecraft bus frame in the SF frame
 
+grace_fo_dae_file_path = Path("./data/grace_fo_low_fidelity.dae")
+
 grace_bus_panels = dynamics.environment_setup.vehicle_systems.body_panel_settings_list_from_dae(
-    file_path=str(Path("./data/grace_fo_low_fidelity_v1.dae")),
+    file_path=str(grace_fo_dae_file_path),
     frame_origin=grace_fo_frame_origin,
     material_properties=grace_fo_material_properties,
     reradiation_settings=grace_fo_reradiation_settings,
@@ -448,14 +451,18 @@ use_de_sitter = True
 # ISBN 3-89888-989-6, 2010. 44, 50, 51, 55
 earth_lense_thirring_angular_momentum = np.array([0.0, 0.0, 9.80e8])  # [m^2/s], in the global frame
 
+guidance_n_revolutions = 1
+guidance_distance_threshold_m = 25e3
+guidance_cooldown_duration_s = 3600.0
+
 guidance_model = Guidance(
     bodies=bodies,
     controlled_satellite="GRACE C",
     reference_satellite="GRACE D",
     target_range=target_range,
-    n_revolutions=1,
-    distance_threshold=25e3,
-    cooldown_duration=3600.0,
+    n_revolutions=guidance_n_revolutions,
+    distance_threshold=guidance_distance_threshold_m,
+    cooldown_duration=guidance_cooldown_duration_s,
 )
 
 
@@ -560,202 +567,125 @@ dependent_variables_to_save = [
     dynamics.propagation_setup.dependent_variable.total_acceleration("GRACE D"),
     ]
 
-state_history_propagation_segments: list[np.ndarray] = []
-dependent_variable_history_propagation_segments: list[np.ndarray] = []
-guidance_log: list[dict[str, float | bool]] = []
+# =====================================
+# PROPAGATION INPUT CACHE
+# =====================================
+# The orbit propagation itself does not depend on the noise model version and is
+# fully deterministic given its inputs, so its results are cached
+# on disk keyed by a hash of those inputs. 
+# NOTE: The fingerprint must be kept in sync by hand with the acceleration settings and the guidance model above
+# whenever those are changed, since it captures their values, not their structure.
+propagation_cache_dir = Path("./output/cache/propagation_results")
 
-current_initial_states = np.asarray(initial_states, dtype=float).copy()
-current_initial_time = float(simulation_start_epoch)
-cooldown_end_time = -np.inf
+propagation_config = {
+    "simulation": {
+        "start_epoch": simulation_start_epoch,
+        "end_epoch": simulation_end_epoch,
+        "time_step": time_step,
+        "epochs_buffer": epochs_buffer,
+    },
+    "initial_state": {
+        "grace_c_tle_line1": grace_c_tle_line1,
+        "grace_c_tle_line2": grace_c_tle_line2,
+        "grace_d_tle_line1": grace_d_tle_line1,
+        "grace_d_tle_line2": grace_d_tle_line2,
+    },
+    "spacecraft": {
+        "mass_kg": grace_fo_mass,
+        "drag_coefficient": drag_coefficient,
+        "material_properties": {
+            "SiOx_Kapton_Front_Rear": {"specular_reflectivity": 0.71, "diffuse_reflectivity": 0.15},
+            "SiOx_Kapton_Apron": {"specular_reflectivity": 0.16, "diffuse_reflectivity": 0.79},
+            "Si_Glass_Solar_Arrays": {"specular_reflectivity": 0.0, "diffuse_reflectivity": 0.10},
+            "Si_Glass_Zenith": {"specular_reflectivity": 1.0, "diffuse_reflectivity": 0.0},
+            "Teflon_Nadir": {"specular_reflectivity": 0.45, "diffuse_reflectivity": 0.05},
+        },
+        "reradiation_settings": grace_fo_reradiation_settings,
+        "frame_origin": grace_fo_frame_origin.tolist(),
+        "macromodel_file": PropagationResultsCache.fingerprint_file(grace_fo_dae_file_path),
+        "pixel_source_dict": pixel_source_dict,
+        "grace_c_occulting_bodies": grace_c_per_source_occulting_bodies,
+        "grace_d_occulting_bodies": grace_d_per_source_occulting_bodies,
+    },
+    "acceleration_model_summary": {
+        "earth_spherical_harmonics_degree_order": [200, 200],
+        "sun_spherical_harmonics_degree_order": [2, 0],
+        "moon_spherical_harmonics_degree_order": [2, 0],
+        "point_mass_gravity_bodies": sorted([
+            "Mars", "Venus", "Mercury", "Jupiter", "Saturn",
+            "Uranus", "Neptune", "Ceres", "Vesta", "Pluto",
+        ]),
+        "use_schwarzschild": use_schwarzschild,
+        "use_lense_thirring": use_lense_thirring,
+        "use_de_sitter": use_de_sitter,
+        "lense_thirring_angular_momentum": earth_lense_thirring_angular_momentum.tolist(),
+    },
+    "environment": {
+        "bodies_to_create": bodies_to_create,
+        "global_frame_origin": global_frame_origin,
+        "global_frame_orientation": global_frame_orientation,
+        "sun_j2": J2_sun,
+        "sun_mean_radius_m": sun_astrometric_mean_radius,
+        "atmosphere_model": "nrlmsise00",
+    },
+    "guidance": {
+        "n_revolutions": guidance_n_revolutions,
+        "distance_threshold_m": guidance_distance_threshold_m,
+        "cooldown_duration_s": guidance_cooldown_duration_s,
+    },
+    "attitude_inputs": {
+        "pitch_json": PropagationResultsCache.fingerprint_file(pitch_history_json_path),
+        "yaw_json": PropagationResultsCache.fingerprint_file(yaw_history_json_path),
+        "roll_json": PropagationResultsCache.fingerprint_file(roll_history_json_path),
+        "seeds": {"GRACE C": 42, "GRACE D": 43},
+    },
+    "spice_kernels": [
+        PropagationResultsCache.fingerprint_file(path) for path in spice_kernel_paths
+    ],
+}
 
-total_cpu_time = 0.0
-total_function_evaluations = 0
+config_hash = PropagationResultsCache.compute_config_hash(propagation_config)
+cached_propagation = PropagationResultsCache.load(propagation_cache_dir, config_hash)
 
-while current_initial_time < simulation_end_epoch:
-    if current_initial_time < cooldown_end_time:
-        current_propagation_arc_label = "cooldown"
-        arc_end_time = min(cooldown_end_time, simulation_end_epoch)
-        termination_settings = create_time_termination_settings(
-            arc_end_time,
-            terminate_exactly_on_final_condition=False,
-        )
-    else:
-        current_propagation_arc_label = "nominal"
-        termination_settings = create_nominal_termination_settings(
-            bodies=bodies,
-            guidance_model=guidance_model,
-            simulation_end_epoch=simulation_end_epoch,
-        )
-
-    dynamics_simulator, propagation_arc_states_array, propagation_arc_dependent_variables_array = propagate_translational_arc(
+if cached_propagation is not None:
+    print(f"\nLoaded cached propagation products (config hash {config_hash[:12]}...); skipping propagation.\n")
+    states_array = cached_propagation["states_array"]
+    dependent_variables_array = cached_propagation["dependent_variables_array"]
+    guidance_log = cached_propagation["guidance_log"]
+    mean_grace_fo_orbital_period = cached_propagation["mean_grace_fo_orbital_period"]
+else:
+    (
+        states_array,
+        dependent_variables_array,
+        guidance_log,
+        mean_grace_fo_orbital_period,
+        total_cpu_time,
+        total_function_evaluations,
+    ) = propagate_orbits(
         bodies=bodies,
         central_bodies=central_bodies,
         acceleration_models=acceleration_models,
         bodies_to_propagate=bodies_to_propagate,
-        initial_states=current_initial_states,
-        initial_time=current_initial_time,
+        initial_states=initial_states,
+        simulation_start_epoch=simulation_start_epoch,
+        simulation_end_epoch=simulation_end_epoch,
         time_step=time_step,
-        termination_settings=termination_settings,
         propagator_type=propagator_type,
-        output_variables=dependent_variables_to_save,
+        dependent_variables_to_save=dependent_variables_to_save,
+        guidance_model=guidance_model,
+        earth_gravitational_parameter=earth_gravitational_parameter,
     )
-
-    state_history_propagation_segments.append(propagation_arc_states_array)
-    dependent_variable_history_propagation_segments.append(propagation_arc_dependent_variables_array)
-
-    cpu_time_history = dynamics_simulator.cumulative_computation_time_history
-    total_cpu_time += list(cpu_time_history.values())[-1]
-    function_evaluation_history = dynamics_simulator.cumulative_number_of_function_evaluations
-    total_function_evaluations += list(function_evaluation_history.values())[-1]
-
-    current_initial_time = float(propagation_arc_states_array[-1, 0])
-    current_initial_states = get_final_state_vectors(propagation_arc_states_array)
-
-    if current_initial_time >= simulation_end_epoch:
-        break
-
-    if current_propagation_arc_label == "cooldown":
-        continue
-
-    termination_details = dynamics_simulator.propagation_results.termination_details
-    termination_flags = list(
-        getattr(termination_details, "was_condition_met_when_stopping", [])
+    PropagationResultsCache.save(
+        propagation_cache_dir,
+        config_hash,
+        propagation_config,
+        states_array=states_array,
+        dependent_variables_array=dependent_variables_array,
+        guidance_log=guidance_log,
+        mean_grace_fo_orbital_period=mean_grace_fo_orbital_period,
+        total_cpu_time=total_cpu_time,
+        total_function_evaluations=total_function_evaluations,
     )
-
-    threshold_condition_met = any(termination_flags[1:]) if termination_flags else False
-    if not threshold_condition_met:
-        break
-
-    controlled_state = current_initial_states[:6]
-    reference_state = current_initial_states[6:12]
-    planned_orbit_phasing_maneuver_strategy = guidance_model.plan_orbit_phasing_maneuver_strategy(
-        current_time=current_initial_time,
-        controlled_state=controlled_state,
-        reference_state=reference_state,
-    )
-
-    if planned_orbit_phasing_maneuver_strategy is None:
-        raise RuntimeError(
-            "The intersatellite range threshold was crossed, but no valid orbit-phasing maneuver could be computed."
-        )
-
-    entry_delta_v_vector = guidance_model.get_impulsive_delta_v_vector(
-        controlled_state,
-        planned_orbit_phasing_maneuver_strategy.entry_delta_v,
-    )
-    current_initial_states = EnvironmentCustomizer.apply_impulsive_velocity_deviation_to_state_vector(
-        current_initial_states,
-        body_index=0,                               # Index referring to GRACE C body object
-        delta_v_vector=entry_delta_v_vector,
-    )
-
-    maneuver_record: dict[str, float | bool] = {
-        "trigger_epoch": planned_orbit_phasing_maneuver_strategy.trigger_epoch,
-        "current_range": planned_orbit_phasing_maneuver_strategy.current_range,
-        "range_error": planned_orbit_phasing_maneuver_strategy.range_error,
-        "entry_delta_v": planned_orbit_phasing_maneuver_strategy.entry_delta_v,
-        "final_phasing_epoch": planned_orbit_phasing_maneuver_strategy.final_phasing_epoch,
-        "phasing_duration": planned_orbit_phasing_maneuver_strategy.phasing_duration,
-        "completed": False,
-    }
-    guidance_log.append(maneuver_record)
-
-    phasing_end_time = min(planned_orbit_phasing_maneuver_strategy.final_phasing_epoch, simulation_end_epoch)
-    dynamics_simulator, propagation_arc_states_array, propagation_arc_dependent_variables_array = propagate_translational_arc(
-        bodies=bodies,
-        central_bodies=central_bodies,
-        acceleration_models=acceleration_models,
-        bodies_to_propagate=bodies_to_propagate,
-        initial_states=current_initial_states,
-        initial_time=current_initial_time,
-        time_step=time_step,
-        termination_settings=create_time_termination_settings(
-            phasing_end_time,
-            terminate_exactly_on_final_condition=True,
-        ),
-        propagator_type=propagator_type,
-        output_variables=dependent_variables_to_save,
-    )
-
-    state_history_propagation_segments.append(propagation_arc_states_array)
-    dependent_variable_history_propagation_segments.append(propagation_arc_dependent_variables_array)
-
-    cpu_time_history = dynamics_simulator.cumulative_computation_time_history
-    total_cpu_time += list(cpu_time_history.values())[-1]
-    function_evaluation_history = dynamics_simulator.cumulative_number_of_function_evaluations
-    total_function_evaluations += list(function_evaluation_history.values())[-1]
-
-    current_initial_time = float(propagation_arc_states_array[-1, 0])
-    current_initial_states = get_final_state_vectors(propagation_arc_states_array)
-    maneuver_record["actual_phasing_end_epoch"] = current_initial_time
-
-    maneuver_completed = planned_orbit_phasing_maneuver_strategy.final_phasing_epoch <= simulation_end_epoch
-    if not maneuver_completed:
-        print(
-            "Stopping at the simulation end epoch before the second impulsive maneuver of the current orbital rephasing could be applied."
-        )
-        break
-
-    exit_delta_v_vector = guidance_model.get_impulsive_delta_v_vector(
-        current_initial_states[:6],
-        planned_orbit_phasing_maneuver_strategy.exit_delta_v,
-    )
-    current_initial_states = EnvironmentCustomizer.apply_impulsive_velocity_deviation_to_state_vector(
-        current_initial_states,
-        body_index=0,
-        delta_v_vector=exit_delta_v_vector,
-    )
-
-    maneuver_record["completed"] = True
-    maneuver_record["exit_epoch"] = current_initial_time
-    maneuver_record["exit_delta_v"] = planned_orbit_phasing_maneuver_strategy.exit_delta_v
-
-    cooldown_end_time = min(
-        current_initial_time + guidance_model.cooldown_duration,
-        simulation_end_epoch,
-    )
-
-    if current_initial_time >= simulation_end_epoch:
-        break
-
-print("\n=================================")
-print(f"Propagation CPU time : ", total_cpu_time)
-print(f"Number of function evaluations : ", total_function_evaluations)
-print(f"Number of phasing maneuvers : ", len(guidance_log))
-print(
-    "Total applied delta-v [m/s] : ",
-    sum(
-        abs(float(maneuver_record["entry_delta_v"]))
-        + (abs(float(maneuver_record["exit_delta_v"])) if maneuver_record.get("completed", False) else 0.0)
-        for maneuver_record in guidance_log
-    ),
-)
-print("=================================\n")
-
-stacked_state_history = np.vstack(state_history_propagation_segments)
-del state_history_propagation_segments
-states_array = restructure_vector_history(stacked_state_history)
-del stacked_state_history
-
-stacked_dependent_variable_history = np.vstack(
-    dependent_variable_history_propagation_segments
-)
-del dependent_variable_history_propagation_segments
-dependent_variables_array = restructure_vector_history(
-    stacked_dependent_variable_history
-)
-del stacked_dependent_variable_history
-
-mean_orbital_period_grace_c, mean_orbital_period_grace_d = get_mean_orbital_period(
-    dependent_variables_array=dependent_variables_array,
-    gravitational_parameter=earth_gravitational_parameter,
-)
-
-mean_grace_fo_orbital_period = 0.5 * (
-    mean_orbital_period_grace_c + mean_orbital_period_grace_d
-)
-
-del mean_orbital_period_grace_c, mean_orbital_period_grace_d
 
 # Release the heavy propagation/environment objects before entering the
 # measurement-simulation and error-propagation stages.
@@ -767,23 +697,13 @@ del bodies
 del bodies_to_propagate
 del body_settings
 del central_bodies
-del cooldown_end_time
-del cpu_time_history
-del current_initial_states
-del current_initial_time
 del dependent_variables_to_save
-del dynamics_simulator
 del earth_gravitational_parameter
-del function_evaluation_history
 del guidance_model
 del initial_states
 del propagator_type
-del propagation_arc_dependent_variables_array
-del propagation_arc_states_array
 del rotation_model_context
 del target_range
-del total_cpu_time
-del total_function_evaluations
 gc.collect()
 
 # =====================================

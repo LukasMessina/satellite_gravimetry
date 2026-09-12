@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from helpers import wrap_rad
+from helpers import get_mean_orbital_period, wrap_rad
 from scipy.integrate import quad
 from scipy.optimize import brentq
 from tudatpy.astro import element_conversion
 from tudatpy import dynamics
 from tudatpy.util import result2array
 
+from environment_customizer import EnvironmentCustomizer
 from guidance import Guidance
 
 import math
@@ -212,4 +213,226 @@ def propagate_translational_arc(
     )
 
     return dynamics_simulator, states_array, dependent_variables_array
+
+
+def propagate_orbits(
+    bodies,
+    central_bodies,
+    acceleration_models,
+    bodies_to_propagate,
+    initial_states,
+    simulation_start_epoch: float,
+    simulation_end_epoch: float,
+    time_step: float,
+    propagator_type,
+    dependent_variables_to_save,
+    guidance_model: Guidance,
+    earth_gravitational_parameter: float,
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, float | bool]], float, float, int]:
+    """Propagate the GRACE-FO pair, applying orbit-phasing
+    maneuvers planned by the guidance model, and return the combined state/dependent-variable
+    histories together with the guidance log and derived diagnostics."""
+
+    state_history_propagation_segments: list[np.ndarray] = []
+    dependent_variable_history_propagation_segments: list[np.ndarray] = []
+    guidance_log: list[dict[str, float | bool]] = []
+
+    current_initial_states = np.asarray(initial_states, dtype=float).copy()
+    current_initial_time = float(simulation_start_epoch)
+    cooldown_end_time = -np.inf
+
+    total_cpu_time = 0.0
+    total_function_evaluations = 0
+
+    while current_initial_time < simulation_end_epoch:
+        if current_initial_time < cooldown_end_time:
+            current_propagation_arc_label = "cooldown"
+            arc_end_time = min(cooldown_end_time, simulation_end_epoch)
+            termination_settings = create_time_termination_settings(
+                arc_end_time,
+                terminate_exactly_on_final_condition=False,
+            )
+        else:
+            current_propagation_arc_label = "nominal"
+            termination_settings = create_nominal_termination_settings(
+                bodies=bodies,
+                guidance_model=guidance_model,
+                simulation_end_epoch=simulation_end_epoch,
+            )
+
+        dynamics_simulator, propagation_arc_states_array, propagation_arc_dependent_variables_array = propagate_translational_arc(
+            bodies=bodies,
+            central_bodies=central_bodies,
+            acceleration_models=acceleration_models,
+            bodies_to_propagate=bodies_to_propagate,
+            initial_states=current_initial_states,
+            initial_time=current_initial_time,
+            time_step=time_step,
+            termination_settings=termination_settings,
+            propagator_type=propagator_type,
+            output_variables=dependent_variables_to_save,
+        )
+
+        state_history_propagation_segments.append(propagation_arc_states_array)
+        dependent_variable_history_propagation_segments.append(propagation_arc_dependent_variables_array)
+
+        cpu_time_history = dynamics_simulator.cumulative_computation_time_history
+        total_cpu_time += list(cpu_time_history.values())[-1]
+        function_evaluation_history = dynamics_simulator.cumulative_number_of_function_evaluations
+        total_function_evaluations += list(function_evaluation_history.values())[-1]
+
+        current_initial_time = float(propagation_arc_states_array[-1, 0])
+        current_initial_states = get_final_state_vectors(propagation_arc_states_array)
+
+        if current_initial_time >= simulation_end_epoch:
+            break
+
+        if current_propagation_arc_label == "cooldown":
+            continue
+
+        termination_details = dynamics_simulator.propagation_results.termination_details
+        termination_flags = list(
+            getattr(termination_details, "was_condition_met_when_stopping", [])
+        )
+
+        threshold_condition_met = any(termination_flags[1:]) if termination_flags else False
+        if not threshold_condition_met:
+            break
+
+        controlled_state = current_initial_states[:6]
+        reference_state = current_initial_states[6:12]
+        planned_orbit_phasing_maneuver_strategy = guidance_model.plan_orbit_phasing_maneuver_strategy(
+            current_time=current_initial_time,
+            controlled_state=controlled_state,
+            reference_state=reference_state,
+        )
+
+        if planned_orbit_phasing_maneuver_strategy is None:
+            raise RuntimeError(
+                "The intersatellite range threshold was crossed, but no valid orbit-phasing maneuver could be computed."
+            )
+
+        entry_delta_v_vector = guidance_model.get_impulsive_delta_v_vector(
+            controlled_state,
+            planned_orbit_phasing_maneuver_strategy.entry_delta_v,
+        )
+        current_initial_states = EnvironmentCustomizer.apply_impulsive_velocity_deviation_to_state_vector(
+            current_initial_states,
+            body_index=0,                               # Index referring to GRACE C body object
+            delta_v_vector=entry_delta_v_vector,
+        )
+
+        maneuver_record: dict[str, float | bool] = {
+            "trigger_epoch": planned_orbit_phasing_maneuver_strategy.trigger_epoch,
+            "current_range": planned_orbit_phasing_maneuver_strategy.current_range,
+            "range_error": planned_orbit_phasing_maneuver_strategy.range_error,
+            "entry_delta_v": planned_orbit_phasing_maneuver_strategy.entry_delta_v,
+            "final_phasing_epoch": planned_orbit_phasing_maneuver_strategy.final_phasing_epoch,
+            "phasing_duration": planned_orbit_phasing_maneuver_strategy.phasing_duration,
+            "completed": False,
+        }
+        guidance_log.append(maneuver_record)
+
+        phasing_end_time = min(planned_orbit_phasing_maneuver_strategy.final_phasing_epoch, simulation_end_epoch)
+        dynamics_simulator, propagation_arc_states_array, propagation_arc_dependent_variables_array = propagate_translational_arc(
+            bodies=bodies,
+            central_bodies=central_bodies,
+            acceleration_models=acceleration_models,
+            bodies_to_propagate=bodies_to_propagate,
+            initial_states=current_initial_states,
+            initial_time=current_initial_time,
+            time_step=time_step,
+            termination_settings=create_time_termination_settings(
+                phasing_end_time,
+                terminate_exactly_on_final_condition=True,
+            ),
+            propagator_type=propagator_type,
+            output_variables=dependent_variables_to_save,
+        )
+
+        state_history_propagation_segments.append(propagation_arc_states_array)
+        dependent_variable_history_propagation_segments.append(propagation_arc_dependent_variables_array)
+
+        cpu_time_history = dynamics_simulator.cumulative_computation_time_history
+        total_cpu_time += list(cpu_time_history.values())[-1]
+        function_evaluation_history = dynamics_simulator.cumulative_number_of_function_evaluations
+        total_function_evaluations += list(function_evaluation_history.values())[-1]
+
+        current_initial_time = float(propagation_arc_states_array[-1, 0])
+        current_initial_states = get_final_state_vectors(propagation_arc_states_array)
+        maneuver_record["actual_phasing_end_epoch"] = current_initial_time
+
+        maneuver_completed = planned_orbit_phasing_maneuver_strategy.final_phasing_epoch <= simulation_end_epoch
+        if not maneuver_completed:
+            print(
+                "Stopping at the simulation end epoch before the second impulsive maneuver of the current orbital rephasing could be applied."
+            )
+            break
+
+        exit_delta_v_vector = guidance_model.get_impulsive_delta_v_vector(
+            current_initial_states[:6],
+            planned_orbit_phasing_maneuver_strategy.exit_delta_v,
+        )
+        current_initial_states = EnvironmentCustomizer.apply_impulsive_velocity_deviation_to_state_vector(
+            current_initial_states,
+            body_index=0,
+            delta_v_vector=exit_delta_v_vector,
+        )
+
+        maneuver_record["completed"] = True
+        maneuver_record["exit_epoch"] = current_initial_time
+        maneuver_record["exit_delta_v"] = planned_orbit_phasing_maneuver_strategy.exit_delta_v
+
+        cooldown_end_time = min(
+            current_initial_time + guidance_model.cooldown_duration,
+            simulation_end_epoch,
+        )
+
+        if current_initial_time >= simulation_end_epoch:
+            break
+
+    print("\n=================================")
+    print(f"Propagation CPU time : ", total_cpu_time)
+    print(f"Number of function evaluations : ", total_function_evaluations)
+    print(f"Number of phasing maneuvers : ", len(guidance_log))
+    print(
+        "Total applied delta-v [m/s] : ",
+        sum(
+            abs(float(maneuver_record["entry_delta_v"]))
+            + (abs(float(maneuver_record["exit_delta_v"])) if maneuver_record.get("completed", False) else 0.0)
+            for maneuver_record in guidance_log
+        ),
+    )
+    print("=================================\n")
+
+    stacked_state_history = np.vstack(state_history_propagation_segments)
+    del state_history_propagation_segments
+    states_array = restructure_vector_history(stacked_state_history)
+    del stacked_state_history
+
+    stacked_dependent_variable_history = np.vstack(
+        dependent_variable_history_propagation_segments
+    )
+    del dependent_variable_history_propagation_segments
+    dependent_variables_array = restructure_vector_history(
+        stacked_dependent_variable_history
+    )
+    del stacked_dependent_variable_history
+
+    mean_orbital_period_grace_c, mean_orbital_period_grace_d = get_mean_orbital_period(
+        dependent_variables_array=dependent_variables_array,
+        gravitational_parameter=earth_gravitational_parameter,
+    )
+    mean_grace_fo_orbital_period = 0.5 * (
+        mean_orbital_period_grace_c + mean_orbital_period_grace_d
+    )
+
+    return (
+        states_array,
+        dependent_variables_array,
+        guidance_log,
+        mean_grace_fo_orbital_period,
+        total_cpu_time,
+        total_function_evaluations,
+    )
 
