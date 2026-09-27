@@ -14,7 +14,16 @@ import numpy as np
 
 @dataclass
 class OrbitalElements:
-    """Class to hold the classical orbital elements of a satellite orbit."""
+    """Holds the classical (Keplerian) orbital elements.
+
+    Attributes:
+        a_km (float): Semi-major axis [km].
+        e (float): Eccentricity [-].
+        i_deg (float): Inclination [deg].
+        raan_deg (float): Right ascension of the ascending node (RAAN), Ω [deg].
+        argp_deg (float): Argument of periapsis, ω [deg].
+        M_deg (float): Mean anomaly at epoch [deg].
+    """
     a_km: float                 # semi-major axis            [km]
     e: float                    # eccentricity               [-]
     i_deg: float                # inclination                [deg]
@@ -23,15 +32,37 @@ class OrbitalElements:
     M_deg: float                # mean anomaly at epoch      [deg]
 
     def get_along_track_shift(
-        self, 
+        self,
         separation_km: float,
         tol_abs: float = 1e-13,
         tol_rel: float = 1e-13,
         ) -> 'OrbitalElements':
-        """Get the orbital elements of the targeter given a separation from the chaser.
+        """Compute the orbital elements of a satellite shifted along-track from this one.
+
+        Given this orbit as the chaser, finds the mean anomaly of a targeter
+        satellite on the same orbit (same a/e/i/RAAN/argp) offset by a fixed
+        along-track arc length, by numerically solving for the true-anomaly
+        change that produces the requested arc length, then converting back to
+        mean anomaly.
 
         Args:
-            separation_km (float): Along-track separation between chaser and targeter [km].
+            separation_km (float): Along-track separation between chaser and
+                targeter [km]. Positive values place the targeter ahead in true
+                anomaly.
+            tol_abs (float): Absolute tolerance used both for the arc-length
+                integration and the root-finding step. Defaults to 1e-13.
+            tol_rel (float): Relative tolerance used both for the arc-length
+                integration and the root-finding step. Defaults to 1e-13.
+
+        Returns:
+            OrbitalElements: A new instance with the same a/e/i/RAAN/argp as
+                self, and mean anomaly adjusted for the requested separation.
+                Returns self unchanged if separation_km is 0.0.
+
+        Raises:
+            ValueError: If self.a_km is not positive.
+            RuntimeError: If a valid true-anomaly bracket for the root solver
+                could not be found within one revolution.
         """
         if separation_km == 0.0:
             return self
@@ -46,6 +77,7 @@ class OrbitalElements:
 
         # Integrand to compute arc length in true anomaly
         def integrand(nu: float) -> float:
+            """Return ds/dnu (arc-length element per unit true anomaly) at true anomaly nu."""
             denom = 1.0 + self.e * math.cos(nu)
             radius_m = p_m / denom
             dr_dnu = (p_m * self.e * math.sin(nu)) / (denom**2)
@@ -58,6 +90,7 @@ class OrbitalElements:
         
         # Root function
         def root_function(dnu_rad: float) -> float:
+            """Return arc_length(nu0 + dnu_rad) - separation_m, zero at the desired true-anomaly shift."""
             return arc_length(nu1 = nu0_rad + dnu_rad) - separation_m
 
         # Root bracketing strategy (single-revolution, smallest-magnitude solution)
@@ -110,6 +143,15 @@ class OrbitalElements:
 
 
 def create_integrator_settings(time_step: float):
+    """Build a fixed-step Runge-Kutta-Fehlberg 14(12) integrator configuration.
+
+    Args:
+        time_step (float): Fixed integration step size, in seconds.
+
+    Returns:
+        tudatpy integrator settings object, ready to pass into a propagator
+        settings constructor.
+    """
     return dynamics.propagation_setup.integrator.runge_kutta_fixed_step(
         time_step=time_step,
         coefficient_set=dynamics.propagation_setup.integrator.rkf_1412,
@@ -117,11 +159,39 @@ def create_integrator_settings(time_step: float):
 
 
 def get_final_state_vectors(states_array: np.ndarray) -> np.ndarray:
+    """Extract the final Cartesian state vector(s) from a propagated state history.
+
+    Args:
+        states_array (np.ndarray): 2D state history array where column 0 is
+            epoch and the remaining columns are the stacked satellite state
+            vectors, as returned by the translational arc propagator.
+
+    Returns:
+        np.ndarray: A copy of the last row's state columns (epoch excluded),
+            suitable for use as the initial state of a subsequent arc.
+    """
     states_array = np.asarray(states_array, dtype=float)
     return states_array[-1, 1:].copy()
 
 
 def restructure_vector_history(history_array: np.ndarray) -> np.ndarray:
+    """Deduplicate a stacked, multi-arc history array by epoch.
+
+    When several propagation arcs are stacked together (e.g. nominal + cooldown
+    arcs), the boundary epoch between two arcs is typically saved twice: once as
+    the last row of the earlier arc and once as the first row of the next arc.
+    This keeps only the last occurrence of each unique epoch, preserving overall
+    time ordering.
+
+    Args:
+        history_array (np.ndarray): 2D array where column 0 is epoch and the
+            remaining columns are state or dependent-variable values, potentially
+            containing duplicate epochs across arc boundaries.
+
+    Returns:
+        np.ndarray: The input array filtered down to one row per unique epoch,
+            in ascending time order.
+    """
     history_array = np.asarray(history_array, dtype=float)
     last_index_for_epoch: dict[float, int] = {}
     for index, epoch in enumerate(history_array[:, 0]):
@@ -134,6 +204,17 @@ def create_time_termination_settings(
     final_time: float,
     terminate_exactly_on_final_condition: bool = False,
 ):
+    """Build propagator termination settings that stop at a fixed epoch.
+
+    Args:
+        final_time (float): Epoch at which propagation should terminate.
+        terminate_exactly_on_final_condition (bool): If True, the propagator
+            interpolates to stop exactly at the final time rather than at the next
+            integrator step past it. Defaults to False.
+
+    Returns:
+        tudatpy termination settings object.
+    """
     return dynamics.propagation_setup.propagator.time_termination(
         final_time,
         terminate_exactly_on_final_condition=terminate_exactly_on_final_condition,
@@ -145,7 +226,36 @@ def create_nominal_termination_settings(
     guidance_model: Guidance,
     simulation_end_epoch: float,
 ):
+    """Build termination settings for a nominal propagation arc.
+
+    The arc stops at whichever comes first: reaching the simulation end epoch, or
+    the intersatellite range error exceeding the guidance model's distance
+    threshold (signaling that an orbit-phasing maneuver is needed).
+
+    Args:
+        bodies: tudat SystemOfBodies environment, used to read the controlled
+            and reference satellites' current states during propagation.
+        guidance_model (Guidance): Guidance model providing the controlled/
+            reference satellite names and the range-error distance threshold.
+        simulation_end_epoch (float): Epoch at which the overall simulation
+            should end regardless of range-error conditions.
+
+    Returns:
+        tudatpy hybrid termination settings object combining the time and
+        custom range-threshold conditions with "stop on first condition met"
+        semantics.
+    """
     def range_threshold_violation_termination(_: float) -> bool:
+        """Return True once the intersatellite range error exceeds the guidance threshold.
+
+        Args:
+            _ (float): Current propagation time; unused, but required by
+                tudat's custom-termination callback signature.
+
+        Returns:
+            bool: True if the current range error magnitude exceeds
+                guidance_model.distance_threshold, signaling termination.
+        """
         controlled_state = np.asarray(
             bodies.get(guidance_model.controlled_satellite).state,
             dtype=float,
@@ -190,6 +300,33 @@ def propagate_translational_arc(
     propagator_type,
     output_variables,
 ):
+    """Run a single translational-dynamics propagation arc.
+
+    Wraps tudat's propagator settings construction and simulator invocation for
+    one contiguous arc (i.e. no maneuvers or termination-condition changes
+    within the arc itself).
+
+    Args:
+        bodies: tudat SystemOfBodies environment.
+        central_bodies: List of central body names, one per propagated body.
+        acceleration_models: tudat acceleration models for the propagated bodies.
+        bodies_to_propagate: List of body names to propagate.
+        initial_states: Stacked initial Cartesian state vector(s) for the
+            propagated bodies at initial_time.
+        initial_time (float): Epoch at which this arc begins.
+        time_step (float): Fixed integrator step size, in seconds.
+        termination_settings: tudatpy termination settings for this arc.
+        propagator_type: tudatpy propagator type (e.g. Cowell).
+        output_variables: List of tudatpy dependent-variable settings to save
+            alongside the state history.
+
+    Returns:
+        tuple: (dynamics_simulator, states_array, dependent_variables_array),
+            where dynamics_simulator is the tudat simulator object (used for
+            diagnostics such as CPU time and function evaluations), and the two
+            arrays are the raw (non-deduplicated) state and dependent-variable
+            histories for this arc.
+    """
     propagator_settings = dynamics.propagation_setup.propagator.translational(
         central_bodies,
         acceleration_models,
@@ -229,9 +366,55 @@ def propagate_orbits(
     guidance_model: Guidance,
     earth_gravitational_parameter: float,
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, float | bool]], float, float, int]:
-    """Propagate the GRACE-FO pair, applying orbit-phasing
-    maneuvers planned by the guidance model, and return the combined state/dependent-variable
-    histories together with the guidance log and derived diagnostics."""
+    """Propagate the GRACE-FO pair end-to-end, applying orbit-phasing maneuvers as needed.
+
+    Repeatedly propagates translational-dynamics arcs from simulation_start_epoch
+    to simulation_end_epoch. Each "nominal" arc runs until either the simulation
+    ends or the intersatellite range error exceeds the guidance model's distance
+    threshold; when the latter happens, an impulsive entry maneuver is applied,
+    a "phasing" arc runs for the planned duration, an impulsive exit maneuver is
+    applied, and a "cooldown" arc runs before the next nominal arc begins. All
+    arcs are stitched together into single combined state and dependent-variable
+    histories.
+
+    Args:
+        bodies: tudat SystemOfBodies environment.
+        central_bodies: List of central body names, one per propagated body.
+        acceleration_models: tudat acceleration models for the propagated bodies.
+        bodies_to_propagate: List of body names to propagate (GRACE C, GRACE D).
+        initial_states: Stacked initial Cartesian state vectors for both
+            satellites at the simulation start epoch.
+        simulation_start_epoch (float): Epoch at which propagation begins.
+        simulation_end_epoch (float): Epoch at which propagation ends.
+        time_step (float): Fixed integrator step size, in seconds.
+        propagator_type: tudatpy propagator type (e.g. Cowell).
+        dependent_variables_to_save: List of tudatpy dependent-variable settings
+            to save alongside the state history.
+        guidance_model (Guidance): Guidance model that plans and triggers
+            orbit-phasing maneuvers based on intersatellite range error.
+        earth_gravitational_parameter (float): Earth's gravitational parameter,
+            used to compute each satellite's mean orbital period.
+
+    Returns:
+        tuple: (
+            states_array: Combined, deduplicated state history (time + stacked
+                Cartesian states for both satellites) across all arcs.
+            dependent_variables_array: Combined, deduplicated dependent-variable
+                history across all arcs.
+            guidance_log: List of per-maneuver records (trigger epoch, range
+                error, delta-v, phasing duration, completion status, etc.).
+            mean_grace_fo_orbital_period: Mean of both satellites' mean orbital
+                periods, in seconds.
+            total_cpu_time: Total propagation CPU time across all arcs, in
+                seconds.
+            total_function_evaluations: Total number of dynamics function
+                evaluations across all arcs.
+        )
+
+    Raises:
+        RuntimeError: If the intersatellite range threshold is crossed but no
+            valid orbit-phasing maneuver strategy could be computed.
+    """
 
     state_history_propagation_segments: list[np.ndarray] = []
     dependent_variable_history_propagation_segments: list[np.ndarray] = []
@@ -288,6 +471,8 @@ def propagate_orbits(
             break
 
         if current_propagation_arc_label == "cooldown":
+            # Cooldown arcs always run to their fixed end time; maneuver
+            # planning below only applies to nominal arcs.
             continue
 
         termination_details = dynamics_simulator.propagation_results.termination_details
@@ -295,6 +480,10 @@ def propagate_orbits(
             getattr(termination_details, "was_condition_met_when_stopping", [])
         )
 
+        # index 0 of termination_flags corresponds to the time-termination condition
+        # from create_nominal_termination_settings; index 1 is the custom
+        # range-threshold condition. Only the latter should trigger maneuver
+        # planning, so the time condition is excluded here.
         threshold_condition_met = any(termination_flags[1:]) if termination_flags else False
         if not threshold_condition_met:
             break

@@ -3,3 +3,5 @@ kernels/
 src/__pycache__/
 *.pyc
 *:Zone.Identifier
+data/grace_fo_1_front_panel_temperature.txt
+output/cache/

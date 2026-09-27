@@ -64,7 +64,12 @@ class DataDownloader:
     verbose: bool = False
 
     def build_command(self) -> list[str]:
-        """Build the CLI command as a list of arguments."""
+        """Build the podaac-data-downloader CLI command as a list of arguments.
+
+        Returns:
+            list[str]: The executable name followed by its arguments, ready to
+                pass to subprocess.run.
+        """
         cmd = [
             self.executable,
             "-c",
@@ -140,10 +145,14 @@ class DataDownloader:
             ) from exc
 
     def _list_downloaded_archives(self) -> list[Path]:
-        """
-        Return all downloaded archive in the output directory.
+        """Find all downloaded archive files in the output directory.
 
-        This includes common compressed products such as .tgz, .tar.gz, .gz, and .zip.
+        Searches output_directory recursively for common compressed-product
+        extensions (.tgz, .tar.gz, .gz, .zip) as well as PO.DAAC's
+        ".ascii." naming convention.
+
+        Returns:
+            list[Path]: Paths to every matching archive file found.
         """
         output_directory_path = Path(self.output_directory)
         archive_files: list[Path] = []
@@ -166,18 +175,39 @@ class DataDownloader:
 
     @staticmethod
     def _is_target_product(member_name: str, data_products: list[str]) -> bool:
-        """Check whether an archive member should be extracted."""
+        """Check whether an archive member's filename matches a requested data product.
+
+        Args:
+            member_name (str): Archive member path/name to check (only the
+                basename is compared).
+            data_products (list[str]): Product-name substrings to match against
+                (e.g. "SCA1B"), case-insensitively.
+
+        Returns:
+            bool: True if any entry in data_products appears in member_name's
+                basename (case-insensitive).
+        """
         file_name = Path(member_name).name.upper()
         return any(data_product.upper() in file_name for data_product in data_products)
-    
+
     @staticmethod
     def _extract_tar_member(
         tar: tarfile.TarFile,
         member: tarfile.TarInfo,
         destination: Path,
     ) -> None:
-        """
-        Safely extract one tar member into the destination directory.
+        """Safely extract one tar member into the destination directory.
+
+        Args:
+            tar (tarfile.TarFile): Open tar archive containing member.
+            member (tarfile.TarInfo): The specific member to extract.
+            destination (Path): Directory to extract the member into; created
+                if it does not already exist. Only the member's basename is
+                used, so archive path traversal (e.g. "../") cannot escape
+                destination.
+
+        Returns:
+            None
         """
         member_name = Path(member.name).name
         if not member_name:
@@ -194,10 +224,21 @@ class DataDownloader:
             shutil.copyfileobj(extracted_file, output)
 
     def _retrieve_selected_data_products_from_archive(self, archive_path: Path, data_products: list[str]) -> None:
-        """
-        Extract only members related to requested data products from a .tgz/.tar.gz archive.
+        """Extract only members related to requested data products from a .tgz/.tar.gz archive.
 
-        After successful extraction, the archive is deleted.
+        After successful extraction, the archive is deleted, so this method
+        should only be called once per archive.
+
+        Args:
+            archive_path (Path): Path to the .tgz or .tar.gz archive to process.
+            data_products (list[str]): Product-name substrings identifying
+                which archive members to extract (see _is_target_product).
+
+        Returns:
+            None
+
+        Raises:
+            ValueError: If archive_path's extension is not .tgz or .tar.gz.
         """
         suffixes_joined = "".join(archive_path.suffixes).lower()
 
@@ -222,8 +263,14 @@ class DataDownloader:
         archive_path.unlink()
 
     def filter_l1b_data_archives(self, data_products: list[str]) -> None:
-        """
-        Extract data products, and delete the processed archives.
+        """Extract requested data products from all downloaded archives, deleting each afterward.
+
+        Args:
+            data_products (list[str]): Product-name substrings identifying
+                which files to keep from each archive.
+
+        Returns:
+            None
         """
         l1b_data_archives = self._list_downloaded_archives()
 
@@ -255,7 +302,8 @@ class DataDownloader:
 
 
 if __name__ == "__main__":
-
+    # Example usage: download one month of GRACE-FO L1B star-camera and GPS
+    # navigation data (SCA1B/GNI1B product files).
     data_downloader = DataDownloader(
         collection="GRACEFO_L1B_ASCII_GRAV_JPL_RL04",
         output_directory="./data/grace_fo_l1b_ascii_grav_jpl_rl04_2019_01_01_2019_02_01",

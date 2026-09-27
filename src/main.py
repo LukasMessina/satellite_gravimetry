@@ -534,6 +534,11 @@ propagator_type = dynamics.propagation_setup.propagator.cowell
 
 earth_gravitational_parameter = bodies.get("Earth").gravitational_parameter
 
+# NOTE: The order of entries here is load-bearing — helpers.get_mean_orbital_period
+# reads GRACE C's Keplerian state from dependent_variables_array columns 35:41
+# and GRACE D's from 41:47, which only holds for this exact ordering (with
+# column 0 reserved for epoch). Reordering or inserting entries here requires
+# updating those hardcoded column indices too.
 dependent_variables_to_save = [
     dependent_variable.single_acceleration_norm(
         dynamics.propagation_setup.acceleration.radiation_pressure_type,  "GRACE C", "Sun",
@@ -837,6 +842,9 @@ gc.collect()
 # GPS POSITION MEASUREMENT SIMULATION 
 # =====================================
 
+# Version 1 uses a simple white-noise model parameterized by a standard deviation in RTN coordinates;
+# version 2 instead uses a measured amplitude spectral density loaded from
+# file. The two paths are mutually exclusive.
 if noise_model_version == 1:
     sigma_gps_position_rtn = np.array([0.01, 0.01, 0.01])*np.sqrt(1/(2*time_step))  # [R, T, N] in meters
     relative_position_error_asd_json_path=None

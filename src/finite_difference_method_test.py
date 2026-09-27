@@ -1,3 +1,5 @@
+""" Validates the finite-difference acceleration differentiator against the simulator's analytical accelerations. """
+
 # NOTE: Load warning module and filter out specific deprecation warnings
 # to avoid cluttering log output with irrelevant messages.
 import warnings
@@ -36,39 +38,35 @@ def validate_numerical_position_differentiation(
         accuracy_orders: list[int],
         plotter: Plotter,
     ) -> dict[int, dict]:
-    """
-    Compute numerical accelerations from a sampled position time history using finite differences
-    and validate them against a reference acceleration time history (e.g., Tudat output).
+    """Validate finite-difference position-to-acceleration differentiation against a reference.
 
-    Parameters
-    ----------
-    satellite_name : str
-        Identifier used only for labeling/logging.
-    time : np.ndarray, shape (N,)
-        Strictly increasing time stamps (seconds). Can be uniform or non-uniform.
-    position : np.ndarray, shape (N, 3)
-        Cartesian position vectors (meters).
-    reference_acceleration : np.ndarray, shape (N, 3)
-        Reference Cartesian acceleration vectors (m/s^2).
-    accuracy_orders : list[int]
-        List of finite-difference accuracy orders to test (typically even integers, e.g., [2, 4, 6, 8, 10]).
+    Computes numerical accelerations from a sampled position time history using
+    finite differences, at each requested accuracy order, and compares them
+    against a reference acceleration time history. Also produces a diagnostic plot per call via plotter.
 
-    Returns
-    -------
-    results : dict[int, dict]
-        Dictionary keyed by accuracy order. For each accuracy, the value is a dictionary with:
-        - 'numerical_acceleration': np.ndarray, shape (N, 3)
-                The numerically differentiated acceleration.
-        - 'error': np.ndarray, shape (N, 3)
-                Vector error (m/s^2).
-        - 'error_norm': np.ndarray, shape (N,)
-                Euclidean norm of the error at each time sample.
-        - 'error_rms': float
-                Root-mean-square of 'error_norm' over all samples.
-        - 'stencil_points': object
-                Per-sample stencil metadata, typically describing
-                which indices/offsets were used and the corresponding finite-difference coefficients.
+    Args:
+        scenario (str): Identifier used only for labeling/logging and plot titles.
+        time (np.ndarray): Shape (N,). Strictly increasing time stamps [s].
+            Can be uniform or non-uniform.
+        position (np.ndarray): Shape (N, 3). Cartesian position vectors [m].
+        reference_acceleration (np.ndarray): Shape (N, 3). Reference Cartesian
+            acceleration vectors [m/s^2] to validate against.
+        accuracy_orders (list[int]): Finite-difference accuracy orders to test
+            (typically even integers.
+        plotter (Plotter): Plotter instance used to save the diagnostic plot.
 
+    Returns:
+        dict[int, dict]: Dictionary keyed by accuracy order. For each accuracy,
+            the value is a dict with:
+            - 'numerical_acceleration' (np.ndarray, shape (N, 3)): The
+              numerically differentiated acceleration.
+            - 'error_vector' (np.ndarray, shape (N, 3)): Vector error [m/s^2].
+            - 'error_norm' (np.ndarray, shape (N,)): Euclidean norm of the
+              error at each time sample.
+            - 'error_rms' (float): Root-mean-square of 'error_norm' over all
+              samples.
+            - 'stencil_points' (object): Per-sample stencil metadata describing
+              which indices/offsets and finite-difference coefficients were used.
     """
 
     results = {}
@@ -105,38 +103,44 @@ def validate_los_inter_satellite_acceleration(
     accuracy_orders: list[int],
     plotter: Plotter,
     ) -> dict[int, dict]:
-    """
-    Compute numerical line-of-sight (LOS) inter-satellite accelerations from sampled position time histories
-    using finite differences and validate them against reference LOS inter-satellite acceleration time histories.
+    """Validate finite-difference line-of-sight inter-satellite acceleration differentiation.
 
-    Parameters
-    ----------
-    scenario : str
-        Identifier used only for labeling/logging.
-    time : np.ndarray, shape (N,)
-        Strictly increasing time stamps (seconds). Can be uniform or non-uniform.
-    target_position : np.ndarray, shape (N, 3)
-        Cartesian position vectors of the target satellite (meters).
-    chaser_position : np.ndarray, shape (N, 3)
-        Cartesian position vectors of the chaser satellite (meters).
-    target_acceleration : np.ndarray, shape (N, 3)
-        Reference Cartesian acceleration vectors of the target satellite (m/s^2).
-    chaser_acceleration : np.ndarray, shape (N, 3)
-        Reference Cartesian acceleration vectors of the chaser satellite (m/s^2).
-    accuracy_orders : list[int]
-        List of finite-difference accuracy orders to test.
+    Computes numerical line-of-sight (LOS) inter-satellite accelerations from
+    sampled position time histories of both satellites using finite
+    differences, at each requested accuracy order, and compares them against a
+    reference LOS inter-satellite acceleration time history. Uses uniform
+    fixed-stencil finite-difference coefficients when the time grid is
+    uniform, and per-sample non-uniform coefficients otherwise. Also produces
+    a diagnostic plot via plotter.
 
-    Returns
-    -------
-    Dictionary keyed by accuracy order. For each accuracy, the value is a dictionary with:
-    - 'numerical_los_inter_satellite_acceleration': np.ndarray, shape (N,)
-            The numerically differentiated LOS inter-satellite acceleration.
-    - 'error': np.ndarray, shape (N,)
-            Vector error (m/s^2).
-    - 'error_abs': np.ndarray, shape (N,)
-            Absolute error at each time sample.
-    - 'error_rms': float
-            Root-mean-square of the error over all samples.
+    Args:
+        scenario (str): Identifier used only for labeling/logging and plot titles.
+        time (np.ndarray): Shape (N,). Strictly increasing time stamps [s].
+            Can be uniform or non-uniform.
+        target_position (np.ndarray): Shape (N, 3). Cartesian position vectors
+            of the target satellite [m].
+        chaser_position (np.ndarray): Shape (N, 3). Cartesian position vectors
+            of the chaser satellite [m].
+        target_acceleration (np.ndarray): Shape (N, 3). Reference Cartesian
+            acceleration vectors of the target satellite [m/s^2].
+        chaser_acceleration (np.ndarray): Shape (N, 3). Reference Cartesian
+            acceleration vectors of the chaser satellite [m/s^2].
+        accuracy_orders (list[int]): Finite-difference accuracy orders to test.
+        plotter (Plotter): Plotter instance used to save the diagnostic plot.
+
+    Returns:
+        dict[int, dict]: Dictionary keyed by accuracy order. For each accuracy,
+            the value is a dict with:
+            - 'los_numerical_intersatellite_acceleration' (np.ndarray, shape
+              (N,)): The numerically differentiated LOS inter-satellite
+              acceleration.
+            - 'error' (np.ndarray, shape (N,)): Signed error [m/s^2].
+            - 'absolute_error' (np.ndarray, shape (N,)): Absolute error at each
+              time sample.
+            - 'error_rms' (float): Root-mean-square of the error over all
+              samples.
+            - 'stencil_points' (list[dict]): Per-sample stencil metadata (scheme,
+              offsets, weights, indices).
     """
 
     # Inter-satellite baseline, range, LOS
@@ -236,6 +240,19 @@ def validate_los_inter_satellite_acceleration(
 ###################################################################
 
 def main() -> None:
+    """Run the finite-difference differentiator validation scenario.
+
+    Propagates the GRACE C/D pair under two simplified force models (point-mass
+    Earth gravity, and Earth gravity with J0+J2 zonal harmonics), then validates
+    both per-satellite acceleration differentiation and LOS inter-satellite
+    acceleration differentiation against the simulator'sanalytical accelerations across
+    a range of finite-difference accuracy orders. Also prints the finite-
+    difference coefficients used for the second derivative at each accuracy
+    order, for a uniform or non-uniform time grid as appropriate.
+
+    Returns:
+        None
+    """
 
     spice.load_standard_kernels()
 

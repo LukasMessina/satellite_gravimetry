@@ -1,3 +1,6 @@
+""" Numerical differentiation and spectral error-analysis utilities: turns noisy
+measurements into an end-to-end error budget for the simulated gravity signal. """
+
 import h5py
 
 from typing import Any
@@ -24,7 +27,26 @@ def save_to_hdf5(
     spectrum_name: str,
     ordinate_label: str,
 ) -> Path:
-    """Save a frequency/ASD spectrum under the versioned output directory."""
+    """Save a frequency/ASD spectrum under the versioned output directory.
+
+    Args:
+        noise_model_version (int): Noise model version (1 or 2), used to pick
+            the output subdirectory.
+        file_name (str): Filename to save the HDF5 file as, within that
+            directory.
+        frequencies (np.ndarray): 1D array of frequencies [Hz].
+        asd_values (np.ndarray): 1D array of ASD values, matching frequencies
+            in shape.
+        spectrum_name (str): spectrum name, stored as an HDF5
+            attribute for reference.
+        ordinate_label (str): Unit label for the ASD values, stored as an HDF5 attribute.
+
+    Returns:
+        Path: Path to the HDF5 file that was written.
+
+    Raises:
+        ValueError: If frequencies and asd_values have different shapes.
+    """
 
     frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
     asd_values = np.asarray(asd_values, dtype=float).reshape(-1)
@@ -52,13 +74,20 @@ def compute_acceleration(
         time: np.ndarray,
         accuracy: int
         ) -> tuple[np.ndarray, dict]:
-    """
-    Compute the acceleration by double differentiating the position time history.
+    """Compute acceleration by double-differentiating a position time history.
 
-    :param position: Array of position vectors at different time steps (shape: (N, 3)).
-    :param time_: Array of time values corresponding to the position measurements (shape: (N,)).
-    :param accuracy: Order of accuracy for the finite difference approximation (2, 4, 6 ...).
-    :return: Array of acceleration vectors (shape: (N, 3)).
+    Args:
+        position (np.ndarray): Shape (N, 3). Cartesian position vectors sampled
+            at time.
+        time (np.ndarray): Shape (N,). Time values corresponding to position,
+            uniform or non-uniform.
+        accuracy (int): Order of accuracy for the finite-difference
+            approximation.
+
+    Returns:
+        tuple[np.ndarray, dict]: (acceleration, metadata), where acceleration
+            is shape (N, 3) and metadata contains a "stencil_points" entry
+            describing the finite-difference stencil used at each sample.
     """
 
     num_epochs = position.shape[0]
@@ -86,7 +115,21 @@ def differentiate_inter_satellite_range(
     accuracy: int,
     derivative_order: int,
 ) -> np.ndarray:
-    """Differentiate a the inter-satellite range history with the requested finite-difference accuracy."""
+    """Differentiate an inter-satellite range history with a requested finite-difference accuracy.
+
+    Args:
+        ranges (np.ndarray): 1D inter-satellite range history [m].
+        time (np.ndarray): 1D time values matching ranges, uniform or
+            non-uniform.
+        accuracy (int): Finite-difference accuracy order.
+        derivative_order (int): 1 for range-rate, 2 for range-acceleration.
+
+    Returns:
+        np.ndarray: The differentiated range history, same shape as ranges.
+
+    Raises:
+        ValueError: If derivative_order is not 1 or 2.
+    """
 
     ranges = np.asarray(ranges, dtype=float).reshape(-1)
     time = np.asarray(time, dtype=float).reshape(-1)
@@ -105,7 +148,24 @@ def build_orbital_phasing_period_exclusion_mask(
     time: np.ndarray,
     guidance_log: list[dict[str, Any]] | None,
 ) -> np.ndarray:
-    """Return a boolean mask marking the samples related to the orbital phasing period to exclude."""
+    """Build a boolean mask marking samples that fall within any orbit-phasing maneuver.
+
+    Samples during and between an entry and exit burn are excluded from noise
+    differentiation and spectral estimation, since the impulsive maneuvers
+    introduce discontinuities that finite-difference stencils and Welch PSD
+    estimation cannot handle correctly.
+
+    Args:
+        time (np.ndarray): 1D array of epochs to build the mask for.
+        guidance_log (list[dict[str, Any]] | None): Guidance maneuver records, each expected to
+            have a "trigger_epoch" and one of "actual_phasing_end_epoch",
+            "exit_epoch", or "final_phasing_epoch" marking the maneuver's end.
+            None or an empty list is treated as "no maneuvers occurred."
+
+    Returns:
+        np.ndarray: Boolean mask, same shape as time, True where the sample
+            falls within any maneuver's trigger-to-exit window (inclusive).
+    """
 
     time = np.asarray(time, dtype=float).reshape(-1)
     exclusion_mask = np.zeros(time.shape[0], dtype=bool)
@@ -130,7 +190,17 @@ def build_orbital_phasing_period_exclusion_mask(
 
 
 def get_contiguous_valid_propagation_segments(valid_propagation_segments_mask: np.ndarray) -> list[np.ndarray]:
-    """Split a boolean validity mask into contiguous valid index segments."""
+    """Split a boolean validity mask into contiguous runs of valid sample indices.
+
+    Args:
+        valid_propagation_segments_mask (np.ndarray): Boolean mask over
+            samples, True where the sample is usable.
+
+    Returns:
+        list[np.ndarray]: One integer index array per contiguous run of True
+            values in the mask, in ascending order. Empty if no True values
+            are present.
+    """
 
     valid_indices = np.flatnonzero(np.asarray(valid_propagation_segments_mask, dtype=bool))
     if valid_indices.size == 0:
@@ -144,7 +214,25 @@ def get_segment_length_from_frequency_resolution(
     time_step: float,
     lowest_frequency_resolution_hz: float,
 ) -> tuple[int, float]:
-    """Convert a target Welch estimated PSD lowest-frequency resolution into a segment length in samples."""
+    """Convert a target Welch-estimated PSD lowest-frequency resolution into a segment length in samples.
+
+    Args:
+        time_step (float): Sample spacing, in seconds.
+        lowest_frequency_resolution_hz (float): Desired lowest resolvable
+            frequency [Hz], which sets the minimum Welch segment duration
+            (duration = 1 / lowest_frequency_resolution_hz).
+
+    Returns:
+        tuple[int, float]: (segment_length, requested_segment_duration_seconds),
+            where segment_length is the segment length in samples (rounded to
+            the nearest integer) and requested_segment_duration_seconds is the
+            exact (pre-rounding) segment duration.
+
+    Raises:
+        ValueError: If time_step or lowest_frequency_resolution_hz is not
+            positive, or if the resulting segment length rounds to less than
+            one sample.
+    """
 
     if time_step <= 0.0:
         raise ValueError("time_step must be positive.")
@@ -170,7 +258,34 @@ def build_welch_estimation_segment_settings(
     emit_warnings: bool = False,
     warning_context: str = "Welch estimation",
 ) -> list[dict[str, Any]]:
-    """Return propagation arcs that support the requested segment length and median-mean averaging."""
+    """Select contiguous propagation arcs long enough for the requested Welch estimation segment settings.
+
+    An arc must be at least segment_length + segment_stride samples long to
+    support pycbc's "median-mean" Welch averaging method; shorter arcs are
+    skipped.
+
+    Args:
+        valid_propagation_segments_mask (np.ndarray): Boolean mask over
+            samples, True where usable (not excluded by a maneuver).
+        time_step (float): Sample spacing, in seconds.
+        segment_length (int): Welch estimation segment length, in samples.
+        segment_stride (int): Welch estimation segment stride, in samples.
+        emit_warnings (bool): If True, computes diagnostic information about
+         skipped arcs. Defaults to False.
+        warning_context (str): Label describing the calling context, used only
+            in the diagnostic message. Defaults to
+            "Welch estimation".
+
+    Returns:
+        list[dict[str, Any]]: One settings dict per usable arc, each with keys
+            "arc_idx", "propagation_arc" (index array), "segment_length",
+            "segment_stride", "segment_duration_seconds", and
+            "lowest_frequency_resolution_hz".
+
+    Raises:
+        ValueError: If segment_length or segment_stride is less than one
+            sample.
+    """
 
     if segment_length < 1:
         raise ValueError("segment_length must be at least one sample.")
@@ -227,7 +342,21 @@ def apply_orbital_phasing_period_exclusion_mask(
     values: np.ndarray,
     exclusion_mask: np.ndarray,
 ) -> np.ndarray:
-    """Return a float array where excluded samples are replaced by NaN."""
+    """Replace excluded samples in a value array with NaN.
+
+    Args:
+        values (np.ndarray): Array of values, first axis indexed by sample.
+        exclusion_mask (np.ndarray): Boolean mask, True where the sample
+            should be replaced with NaN.
+
+    Returns:
+        np.ndarray: A copy of values (as float) with excluded samples set to
+            NaN.
+
+    Raises:
+        ValueError: If values and exclusion_mask have a different number of
+            samples.
+    """
 
     values = np.asarray(values, dtype=float).copy()
     exclusion_mask = np.asarray(exclusion_mask, dtype=bool).reshape(-1)
@@ -245,7 +374,25 @@ def get_welch_segment_settings_from_propagation_segments(
     target_lowest_frequency_resolution_hz: float = LOWEST_FREQUENCY_RESOLUTION_HZ,
     warning_context: str = "Welch estimation",
 ) -> list[dict[str, Any]]:
-    """Return per-arc Welch settings for the requested lowest-frequency resolution."""
+    """Build per-arc Welch estimation settings for a requested lowest-frequency resolution, with a 50% overlap stride.
+
+    Args:
+        valid_propagation_segments_mask (np.ndarray): Boolean mask over
+            samples, True where usable.
+        time_step (float): Sample spacing, in seconds.
+        target_lowest_frequency_resolution_hz (float): Desired lowest
+            resolvable frequency [Hz]. Defaults to LOWEST_FREQUENCY_RESOLUTION_HZ.
+        warning_context (str): Label describing the calling context, used in
+            diagnostic messages. Defaults to "Welch estimation".
+
+    Returns:
+        list[dict[str, Any]]: Per-arc Welch estimation segment settings, as returned by
+            build_welch_estimation_segment_settings.
+
+    Raises:
+        ValueError: If no valid propagation arc is long enough to support the
+            requested resolution.
+    """
 
     segment_length, requested_segment_duration_seconds = get_segment_length_from_frequency_resolution(
         time_step=time_step,
@@ -281,7 +428,42 @@ def compute_weighted_average_psd_across_segments(
     emit_warnings: bool = False,
     warning_context: str = "Welch estimation",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Estimate Welch PSDs segment by segment and average them with weights derived by proportion of samples in each segment."""
+    """Estimate a Welch PSD independently per propagation arc, then combine with sample-count weighting.
+
+    Each contiguous valid propagation arc is Welch-PSD-estimated separately
+    (so no stencil or segment spans an excluded maneuver gap), then the
+    per-arc PSDs are averaged, weighted by each arc's sample count, requiring
+    all arcs to share the same frequency grid.
+
+    Args:
+        values (np.ndarray): 1D signal to estimate the PSD of.
+        valid_propagation_segments_mask (np.ndarray): Boolean mask over
+            samples, True where usable.
+        time_step (float): Sample spacing, in seconds.
+        segment_length (int | None): Welch estimation segment length, in samples. Must be
+            given together with segment_stride if welch_segment_settings is
+            not provided.
+        segment_stride (int | None): Welch estimationsegment stride, in samples.
+        welch_segment_settings (list[dict[str, Any]] | None): Precomputed
+            per-arc settings, as an alternative to segment_length/segment_stride.
+        emit_warnings (bool): Passed through to build_welch_estimation_segment_settings
+            if segment_length/segment_stride path is used. Defaults to False.
+        warning_context (str): Label for diagnostic messages. Defaults to
+            "Welch estimation".
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: (frequency_grid, weighted_average_psd),
+            the shared frequency grid and the sample-count-weighted average
+            PSD across all usable arcs.
+
+    Raises:
+        ValueError: If values and valid_propagation_segments_mask have
+            different shapes, if neither or both of
+            (welch_segment_settings) and (segment_length, segment_stride) are
+            provided, or if no valid arc supports the requested settings.
+        RuntimeError: If different arcs' Welch PSD estimates land on different
+            frequency grids (the segment settings should prevent this).
+    """
 
     values = np.asarray(values, dtype=float).reshape(-1)
     valid_propagation_segments_mask = np.asarray(valid_propagation_segments_mask, dtype=bool).reshape(-1)
@@ -353,7 +535,26 @@ def compute_log_frequency_binned_psd(
     psd_values: np.ndarray,
     bin_width_decades: float = 0.05,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return a PSD averaged within uniform log10-frequency bins."""
+    """Smooth a PSD by averaging within uniform log10-frequency bins.
+
+    Args:
+        frequencies (np.ndarray): 1D frequency array [Hz].
+        psd_values (np.ndarray): 1D PSD values matching frequencies.
+        bin_width_decades (float): Bin width in log10-frequency decades.
+            Defaults to 0.05.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: (smoothed_frequencies, smoothed_psd),
+            each entry being the mean frequency/PSD value within one populated
+            log-frequency bin, in ascending frequency order.
+
+    Raises:
+        ValueError: If frequencies and psd_values have different shapes,
+            bin_width_decades is not positive, or no finite positive-frequency
+            sample is available.
+        RuntimeError: If binning produces no populated bins (should not occur
+            given the input validation above).
+    """
 
     frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
     psd_values = np.asarray(psd_values, dtype=float).reshape(-1)
@@ -433,7 +634,15 @@ def compute_log_frequency_binned_psd(
 
 
 def compute_root_mean_square_over_finite_values(values: np.ndarray) -> float:
-    """Return the RMS over finite entries only."""
+    """Compute the root-mean-square of an array's finite entries, ignoring NaN/inf.
+
+    Args:
+        values (np.ndarray): Array of values, potentially containing NaN
+            entries.
+
+    Returns:
+        float: RMS computed over only the finite entries of values.
+    """
 
     values = np.asarray(values, dtype=float).reshape(-1)
     finite_mask = np.isfinite(values)
@@ -448,8 +657,27 @@ def differentiate_inter_satellite_range_piecewise(
     derivative_order: int,
     valid_propagation_segments_mask: np.ndarray,
 ) -> np.ndarray:
-    """
-    Differentiate only within contiguous valid propagation segments so no finite difference stencil spans an excluded gap.
+    """Differentiate a range history arc-by-arc so no finite-difference stencil spans an excluded gap.
+
+    Applies finite differentiation independently within each
+    contiguous run of valid samples, leaving excluded samples as
+    NaN in the output.
+
+    Args:
+        ranges (np.ndarray): 1D inter-satellite range history [m].
+        time (np.ndarray): 1D time values matching ranges.
+        accuracy (int): Finite-difference accuracy order.
+        derivative_order (int): 1 for range-rate, 2 for range-acceleration.
+        valid_propagation_segments_mask (np.ndarray): Boolean mask over
+            samples, True where usable.
+
+    Returns:
+        np.ndarray: Differentiated range history, same shape as ranges, with
+            NaN at excluded samples.
+
+    Raises:
+        ValueError: If ranges, time, and valid_propagation_segments_mask do
+            not all share the same shape.
     """
 
     ranges = np.asarray(ranges, dtype=float).reshape(-1)
@@ -479,7 +707,23 @@ def compute_log_root_mean_square_misfit(
     analytical_asd: np.ndarray,
     minimum_frequency_hz: float = 1e-5,
 ) -> float:
-    """Return the RMS log-space misfit between numerical and analytical ASD curves."""
+    """Compute the RMS log10-space misfit between numerical and analytical ASD curves.
+
+    Args:
+        frequencies (np.ndarray): 1D frequency array [Hz], matching
+            numerical_asd and analytical_asd in shape.
+        numerical_asd (np.ndarray): ASD estimated via Welch PSD estimation.
+        analytical_asd (np.ndarray): ASD predicted analytically (by
+            scaling a reference ASD by (2*pi*f)^derivative_order).
+        minimum_frequency_hz (float): Frequencies at or below this value are
+            excluded from the misfit, to avoid the ill-defined low-frequency/DC
+            region. Defaults to 1e-5.
+
+    Returns:
+        float: RMS of log10(numerical_asd) - log10(analytical_asd) over the
+            frequency band where both ASDs are nonzero and above
+            minimum_frequency_hz.
+    """
 
     frequencies = np.asarray(frequencies, dtype=float).reshape(-1)
     numerical_asd = np.asarray(numerical_asd, dtype=float).reshape(-1)
@@ -508,7 +752,49 @@ def run_psd_estimation_parameter_sensitivity_analysis(
     seed: int,
     minimum_log_rms_misfit_frequency_hz: float = 1e-5,
 ) -> dict[str, Any]:
-    """Sensitivity analysis over Welch PSD estimation parameter settings."""
+    """Search Welch estimationsegment-length/stride settings for the best analytical-vs-numerical ASD fit.
+
+    Randomly samples (segment_length, segment_stride) pairs supported by the
+    available propagation arcs, estimates the Welch ASD of both
+    range_noise_debiased and differentiated_range_noise for each candidate,
+    and scores each candidate by how closely
+    (2*pi*f)^derivative_order * ASD(range_noise_debiased) matches the directly
+    estimated ASD(differentiated_range_noise) in log-space. The candidate with
+    the smallest such misfit is returned as the best fit.
+
+    Args:
+        range_noise_debiased (np.ndarray): 1D debiased KBR range-noise history.
+        differentiated_range_noise (np.ndarray): 1D range-noise history already
+            differentiated to derivative_order (rate or acceleration).
+        valid_propagation_segments_mask (np.ndarray): Boolean mask over
+            samples, True where usable.
+        time_step (float): Sample spacing, in seconds.
+        derivative_order (int): 1 for range-rate, 2 for range-acceleration;
+            used in the analytical ASD scaling law.
+        num_trials (int): Target number of distinct (segment_length,
+            segment_stride) candidates to evaluate.
+        seed (int): Seed for the random candidate sampler, for reproducibility.
+        minimum_log_rms_misfit_frequency_hz (float): Passed to
+            compute_log_root_mean_square_misfit as its low-frequency cutoff.
+            Defaults to 1e-5.
+
+    Returns:
+        dict[str, Any]: A dict with keys:
+            - "records" (list[dict[str, float]]): One entry per evaluated
+              candidate, with segment_length, segment_stride,
+              segment_duration_seconds, lowest_frequency_resolution_hz,
+              number_of_used_propagation_segments, and log_rms_misfit.
+            - "best_record" (dict[str, Any]): The lowest-misfit candidate's
+              record, plus "frequencies", "range_noise_debiased_asd",
+              "numerical_differentiated_asd", and "analytical_differentiated_asd"
+              arrays.
+
+    Raises:
+        ValueError: If the three input arrays have mismatched shapes, if no
+            valid propagation segment exists, or if no segment is long enough
+            to support the minimum required Welch estimation settings.
+        RuntimeError: If no candidate produced a valid result.
+    """
 
     range_noise_debiased = np.asarray(range_noise_debiased, dtype=float).reshape(-1)
     differentiated_range_noise = np.asarray(differentiated_range_noise, dtype=float).reshape(-1)
@@ -561,6 +847,9 @@ def run_psd_estimation_parameter_sensitivity_analysis(
     rng = np.random.default_rng(seed)
     candidate_parameters_pairs = {(starting_segment_length, starting_segment_stride)}
 
+    # Cap the number of sampling attempts so this loop cannot spin forever if
+    # the valid arcs are too short to yield num_trials distinct, supportable
+    # (segment_length, segment_stride) pairs.
     max_sampling_attempts =  num_trials * 100
     sampling_attempts = 0
     while len(candidate_parameters_pairs) < num_trials:
@@ -569,6 +858,8 @@ def run_psd_estimation_parameter_sensitivity_analysis(
             break
 
         segment_length = int(rng.integers(min_segment_length, max_segment_length + 1))
+        # Stride between 50% and 100% of segment_length keeps segment overlap
+        # within pycbc's supported range for "median-mean" Welch estimation method's averaging.
         segment_stride = int(rng.integers(segment_length // 2, segment_length + 1))
 
         if not any(
@@ -668,8 +959,67 @@ def propagate_observation_errors_to_lgds(
     sensitivity_analysis_runs: int = 10000,
     sensitivity_analysis_seed: int = 42,
 ) -> None:
-    """
-    Propagate the KBR range observation errors to LGDs error budget.
+    """Propagate KBR range and related noise into a line-of-sight gravity difference (LGD) error budget.
+
+    End-to-end pipeline: 
+     - excludes samples within any orbit-phasing maneuver window
+     - estimates the KBR debiased range-noise ASD via Welch's method
+     - numerically differentiates the noisy range history to
+       range-rate/range-acceleration at several finite-difference accuracy
+       orders, picking the accuracy with lowest RMS error against the reference
+       (error-free) range-rate/acceleration derived from dependent_variables_array,
+     - cross-checks the differentiated range-noise ASD against an analytical
+       (2*pi*f)^n-scaled prediction via a Welch estimation parameter sensitivity search, and
+     - reconstructs the noisy and error-free line-of-sight gravity difference
+       (LGD) using GPS position/velocity noise, accelerometer observations, and
+       noisy attitude, then estimates and saves the resulting LGD error ASD.
+
+
+    Args:
+        time_step (float): Sample spacing, in seconds.
+        kbr_range_noise (np.ndarray): Noisy (biased) KBR range-noise history [m].
+        kbr_range_noise_debiased (np.ndarray): Debiased KBR range-noise history [m].
+        eci_velocity_data (list[np.ndarray]): [target_velocity, chaser_velocity],
+            each an (N, 3) ECI velocity history [m/s].
+        eci_gps_velocity_noise (dict[str, np.ndarray]): Per-satellite ("GRACE C",
+            "GRACE D") GPS-derived velocity noise histories.
+        eci_position_data (list[np.ndarray]): [target_position, chaser_position],
+            each an (N, 3) ECI position history [m].
+        eci_gps_position_noise (dict[str, np.ndarray]): Per-satellite GPS-derived
+            position noise histories.
+        accelerometer_observations_sf (dict[str, np.ndarray]): Per-satellite
+            accelerometer observations in the satellite frame.
+        dependent_variables_array (np.ndarray): Dependent-variable history from
+            propagation.
+        noisy_attitude_time_series (dict[str, dict[str, types.TimeSeries]]):
+            Per-satellite noisy yaw/pitch/roll pointing-angle time series.
+        guidance_log (list[dict[str, Any]] | None): Orbit-phasing maneuver
+            records, used to exclude affected samples.
+        plotter (Plotter): Plotter instance used to save diagnostic plots.
+        noise_model_version (int): Noise model version (1 or 2), used when
+            saving spectra to the versioned output directory.
+        reference_orbital_period (float | None): Mean orbital period, in
+            seconds, used only to annotate plots with an orbital-period
+            reference line. Optional.
+        accuracy_orders (list[int] | None): Finite-difference accuracy orders
+            to evaluate; defaults to [2, 4, ..., 20] if not given.
+        sensitivity_analysis_runs (int): Number of Welch estimation parameter candidates
+            to evaluate in run_psd_estimation_parameter_sensitivity_analysis.
+            Defaults to 10000.
+        sensitivity_analysis_seed (int): Base seed for the sensitivity
+            analysis; the second (range-acceleration) analysis uses
+            sensitivity_analysis_seed + 1. Defaults to 42.
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If eci_position_data/eci_velocity_data do not each contain
+            exactly two histories, if no maneuver-free samples are available,
+            or if reference_orbital_period is provided but not positive.
+        KeyError: If eci_gps_position_noise, eci_gps_velocity_noise, or
+            accelerometer_observations_sf is missing an entry for "GRACE C" or
+            "GRACE D".
     """
 
     if accuracy_orders is None:
@@ -720,6 +1070,9 @@ def propagate_observation_errors_to_lgds(
     relative_velocity = target_velocity - chaser_velocity
     reference_range_rate = np.einsum("ij,ij->i", los_unit_vector, relative_velocity)
 
+    # NOTE: Column indices below are tied to the fixed order of
+    # dependent_variables_to_save in main.py: the columns referenced to below hold
+    # GRACE C's and GRACE D's total_acceleration entries respectively.
     target_total_acceleration = apply_orbital_phasing_period_exclusion_mask(
         dependent_variables_array[:, 47:50],
         orbital_phasing_period_exclusion_mask,
@@ -1082,6 +1435,8 @@ def propagate_observation_errors_to_lgds(
         if satellite_label not in accelerometer_observations_sf:
             raise KeyError(f"Missing accelerometer observations  for {satellite_label}.")
 
+    # NOTE: Column indices below are tied to the fixed order of
+    # dependent_variables_to_save.
     error_free_target_non_gravitational_acceleration = apply_orbital_phasing_period_exclusion_mask(
         dependent_variables_array[:, 3:6]
         + dependent_variables_array[:, 11:14],
@@ -1242,6 +1597,16 @@ def propagate_observation_errors_to_lgds(
     )
 
     def estimate_amplitude_spectral_density(signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Estimate a signal's ASD using the LGD-specific Welch estimation segment settings.
+
+        Args:
+            signal (np.ndarray): 1D signal to estimate the ASD of, sampled at
+                the enclosing function's time_step and aligned with
+                valid_propagation_segments_mask.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (frequencies, asd_values).
+        """
         frequencies, estimated_psd = compute_weighted_average_psd_across_segments(
             values=signal,
             valid_propagation_segments_mask=valid_propagation_segments_mask,
@@ -1280,7 +1645,7 @@ def propagate_observation_errors_to_lgds(
         f"  RMS propagated LGD error = {compute_root_mean_square_over_finite_values(lgd_error):.6e} m/s^2"
     )
     print(
-        "  LGD spectrum Welch settings: "
+        "  LGD spectrum Welch estimation settings: "
         f"segment_length={int(lgd_welch_segment_settings[0]['segment_length'])}, "
         f"segment_stride={int(lgd_welch_segment_settings[0]['segment_stride'])}, "
         f"lowest_frequency_resolution={lgd_welch_segment_settings[0]['lowest_frequency_resolution_hz']:.6e} Hz"

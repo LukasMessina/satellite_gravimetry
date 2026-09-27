@@ -1,14 +1,38 @@
 import numpy as np
 
 def wrap_deg(x: float) -> float:
-    """Wrap angle to [0, 360)."""
+    """Wrap an angle into the range [0, 360) degrees.
+
+    Args:
+        x (float): Angle in degrees, any range.
+
+    Returns:
+        float: x wrapped into [0, 360).
+    """
     return x % 360.0
 
 def wrap_rad(x: float) -> float:
-    """Wrap angle to [0, 2pi)."""
+    """Wrap an angle into the range [0, 2*pi) radians.
+
+    Args:
+        x (float): Angle in radians, any range.
+
+    Returns:
+        float: x wrapped into [0, 2*pi).
+    """
     return x % (2.0 * np.pi)
 
 def rtn_basis(r, v):
+    """Build a single-epoch Radial-Transverse-Normal (RTN) basis from position/velocity.
+
+    Args:
+        r: 3-element position vector.
+        v: 3-element velocity vector.
+
+    Returns:
+        np.ndarray: 3x3 matrix whose columns are the unit radial, transverse
+            (along-track), and normal (orbit-plane-normal) basis vectors.
+    """
     Rhat = r / np.linalg.norm(r)
     h = np.cross(r, v); Nhat = h / np.linalg.norm(h)
     That = np.cross(Nhat, Rhat)
@@ -18,6 +42,19 @@ def transform_vector_history_inertial_to_satellite_frame(
     vectors_inertial: np.ndarray,
     rot_inertial_to_sf_flat: np.ndarray,
 ) -> np.ndarray:
+    """Rotate a history of inertial-frame vectors into the satellite frame.
+
+    Args:
+        vectors_inertial (np.ndarray): Array reshapeable to (N, 3), one inertial
+            3-vector per epoch.
+        rot_inertial_to_sf_flat (np.ndarray): Array reshapeable to (N, 3, 3), one
+            inertial-to-satellite-frame rotation matrix per epoch, matching
+            the inertial vectors in ordering.
+
+    Returns:
+        np.ndarray: Array of shape (N, 3), the input vectors expressed in the
+            satellite frame at each epoch.
+    """
     rot_inertial_to_sf = np.asarray(rot_inertial_to_sf_flat, dtype=float).reshape(-1, 3, 3)
     vectors_inertial = np.asarray(vectors_inertial, dtype=float).reshape(-1, 3)
     return np.einsum("nij,nj->ni", rot_inertial_to_sf, vectors_inertial)
@@ -26,7 +63,24 @@ def compute_rtn_basis_history(
     reference_position_history: np.ndarray,
     reference_velocity_history: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build the RTN basis history from a reference Cartesian state history."""
+    """Build the RTN basis history from a reference Cartesian state history.
+
+    Args:
+        reference_position_history (np.ndarray): (N, 3) array of inertial-frame
+            reference positions, one per epoch.
+        reference_velocity_history (np.ndarray): (N, 3) array of inertial-frame
+            reference velocities, one per epoch, matching
+            the reference position history in ordering.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray, np.ndarray]: (radial_unit_vector,
+            along_track_unit_vector, normal_unit_vector), each an (N, 3) array
+            of unit vectors for the corresponding RTN axis at each epoch.
+
+    Raises:
+        ValueError: If the inputs are not 2D, differently shaped, or do not
+            have exactly 3 columns.
+    """
 
     reference_position_history = np.asarray(reference_position_history, dtype=float)
     reference_velocity_history = np.asarray(reference_velocity_history, dtype=float)
@@ -57,7 +111,22 @@ def transform_vector_history_inertial_to_rtn(
     reference_position_history: np.ndarray,
     reference_velocity_history: np.ndarray,
 ) -> np.ndarray:
-    """Project an inertial vector history onto the RTN frame built from a reference orbit."""
+    """Project an inertial vector history onto the RTN frame built from a reference orbit.
+
+    Args:
+        vector_history (np.ndarray): (N, 3) array of inertial-frame vectors, one per epoch.
+        reference_position_history (np.ndarray): (N, 3) array of inertial-frame
+            reference positions defining the RTN frame at each epoch.
+        reference_velocity_history (np.ndarray): (N, 3) array of inertial-frame
+            reference velocities defining the RTN frame at each epoch.
+
+    Returns:
+        np.ndarray: (N, 3) array of vector history expressed in the RTN frame
+            (radial, along-track, normal components) at each epoch.
+
+    Raises:
+        ValueError: If the vector history is not a 2D array with 3 columns.
+    """
 
     reference_position_history = np.asarray(reference_position_history, dtype=float)
     reference_velocity_history = np.asarray(reference_velocity_history, dtype=float)
@@ -89,7 +158,26 @@ def get_mean_orbital_period(
     dependent_variables_array: np.ndarray,
     gravitational_parameter: float,
 ) -> tuple[float, float]:
-    """Return the mean orbital periods of GRACE C and GRACE D from saved Keplerian histories."""
+    """Return the mean orbital periods of GRACE C and GRACE D from saved Keplerian histories.
+
+    Args:
+        dependent_variables_array (np.ndarray): 2D dependent-variable history
+            array, with GRACE C's Keplerian elements in columns 35:41 and
+            GRACE D's in columns 41:47 (column 0 is semi-major axis for each).
+        gravitational_parameter (float): Central body's (Earth's) gravitational
+            parameter.
+
+    Returns:
+        tuple[float, float]: (mean_orbital_period_grace_c,
+            mean_orbital_period_grace_d), each the time-averaged orbital period
+            in seconds, computed from Kepler's third law applied to each
+            epoch's semi-major axis.
+
+    Raises:
+        ValueError: If the dependent variables array is not 2D, the gravitational parameter
+            is not positive, or either satellite's semi-major axis history
+            contains non-positive values.
+    """
 
     dependent_variables_array = np.asarray(dependent_variables_array, dtype=float)
 
@@ -99,6 +187,7 @@ def get_mean_orbital_period(
     if gravitational_parameter <= 0.0:
         raise ValueError("gravitational_parameter must be positive.")
 
+    # NOTE: Column layout matches the fixed order of dependent_variables_to_save.
     grace_c_keplerian_history = dependent_variables_array[:, 35:41]
     grace_d_keplerian_history = dependent_variables_array[:, 41:47]
 
@@ -122,6 +211,13 @@ def get_mean_orbital_period(
 
 
 def get_noise_model_version():
+    """Prompt the user interactively to select a noise model version.
+
+    Blocks on standard input until the user enters a valid choice.
+
+    Returns:
+        int: The selected noise model version, either 1 or 2.
+    """
     while True:
         try:
             user_input = int(input(
@@ -137,10 +233,29 @@ def get_noise_model_version():
 
 
 def get_optimal_amplitude_spectral_density_combination(*amplitude_spectral_density_arrays: np.ndarray) -> np.ndarray:
-    """Compute the optimal combination of multiple amplitude spectral density arrays."""
+    """Combine multiple amplitude spectral densities into their inverse-variance-optimal estimate.
+
+    Treats each input ASD as an independent noise estimate and combines them
+    via inverse-variance weighting, which minimizes the combined estimate's variance
+    under the assumption of independent, zero-mean noise sources.
+
+    Args:
+        *amplitude_spectral_density_arrays (np.ndarray): One or more ASD arrays
+            of matching shape, each representing an independent noise
+            contribution at the same frequency bins.
+
+    Returns:
+        np.ndarray: The combined ASD array, same shape as each input.
+
+    Raises:
+        ValueError: If no arrays are provided.
+    """
     if not amplitude_spectral_density_arrays:
         raise ValueError("At least one amplitude spectral density array must be provided.")
 
+    # Converting ASD -> PSD lets independent noise sources combine
+    # by simple inverse-variance weighting; converting back to ASD (sqrt) at
+    # the end yields the combined amplitude spectral density.
     inverse_power_spectral_densities = [1.0 / (asd_array**2) for asd_array in amplitude_spectral_density_arrays]
     optimal_asd = 1.0 / np.sqrt(np.sum(inverse_power_spectral_densities, axis=0))
 

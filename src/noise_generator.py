@@ -19,7 +19,15 @@ from scipy.spatial.transform import Rotation
 from findiff import Diff
 
 class NoiseGenerator:
-    """Class to generate different types of noise for satellite measurements. """
+    """Generates the various noise sources used in the GRACE-FO simulation.
+
+    Covers GPS position/velocity noise, error-free and noisy attitude
+    (pointing-angle) time series, KBR system/oscillator and antenna
+    phase-center noise, and accelerometer observation noise, each with two
+    selectable noise models variants (a simple white-noise model, or a
+    colored-noise model driven by measured/analytical amplitude spectral
+    densities).
+    """
 
     @staticmethod
     def generate_gps_noise(
@@ -32,7 +40,35 @@ class NoiseGenerator:
         sigma_rtn: np.ndarray | None = None,
         relative_position_error_asd_json_path: Path | None = None,
         ) -> tuple[np.ndarray, np.ndarray]:
-        """ Generate GPS position and velocity measurement noise in ECI reference frame."""
+        """Generate GPS position and velocity measurement noise in the ECI reference frame.
+
+        Version 1 generates white noise directly in the RTN frame from
+        sigma_rtn and rotates it into ECI. Version 2 instead loads a measured
+        relative-position-error ASD from JSON, converts it to an equivalent
+        single-satellite absolute-position-error ASD, and generates colored
+        noise from it directly in ECI. In both cases, velocity errors are
+        obtained by numerically differentiating the position errors (4th-order
+        finite differences). Also produces several diagnostic plots via
+        plotter.
+
+        Args:
+            plotter (Plotter): Plotter instance used to save diagnostic plots.
+            num_epochs (int): Number of samples to generate.
+            state_vector (np.ndarray): (num_epochs, 6) ECI Cartesian state
+                (position + velocity) history, used to build the RTN frame.
+            seed (int): Base random seed.
+            noise_model_version (int): 1 for the RTN white-noise model, any
+                other value for the ASD-driven colored-noise model.
+            satellite_name (str): Identifier used only for plot filenames.
+            sigma_rtn (np.ndarray | None): 3-element RTN standard deviations
+                [m], required when noise_model_version == 1.
+            relative_position_error_asd_json_path (Path | None): Path to a JSON
+                ASD file, required when noise_model_version != 1.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (eci_position_errors,
+                eci_velocity_errors), each shape (num_epochs, 3).
+        """
 
         time_step = 5.0  # seconds
         num_samples = num_epochs
@@ -230,7 +266,31 @@ class NoiseGenerator:
         seed: int,
         generate_plots: bool = True,
         ) -> dict[str, types.TimeSeries]:
-        """ Generate error-free pointing angles based on ASD data from JSON files. """
+        """Generate error-free pointing angle time series from measured ASD data.
+
+        For each of pitch/yaw/roll, loads a measured ASD from JSON files,
+        interpolates it onto a uniform frequency grid matching the requested
+        sample count and 5-second time step, and generates a colored-noise
+        time series from the resulting PSD. This represents the nominal (reference)
+        attitude profile, not a perturbation, actual pointing errors are added separately by
+        generate_pointing_angles_noise.
+
+        Args:
+            plotter (Plotter): Plotter instance used to save diagnostic plots.
+            pitch_history_json_path (Path): Path to the pitch ASD JSON file.
+            yaw_history_json_path (Path): Path to the yaw ASD JSON file.
+            roll_history_json_path (Path): Path to the roll ASD JSON file.
+            num_epochs (int): Number of samples to generate.
+            satellite_label (str): Identifier used only for plot filenames.
+            seed (int): Base random seed; pitch/yaw/roll use seed, seed+1,
+                seed+2 respectively.
+            generate_plots (bool): If True, saves ASD-interpolation, time
+                series, and Welch estimation comparison diagnostic plots. Defaults to True.
+
+        Returns:
+            dict[str, types.TimeSeries]: Keys "pitch", "yaw", "roll", each a
+                pycbc TimeSeries of length num_epochs at a 5 s sample rate.
+        """
 
         json_paths =[pitch_history_json_path, yaw_history_json_path, roll_history_json_path]
         file_prefixes = ['pitch', 'yaw', 'roll']
@@ -349,13 +409,55 @@ class NoiseGenerator:
         counterpart_position: np.ndarray | None = None,
         generate_plots: bool = True,
         ) -> dict[str, types.TimeSeries]:
-        """
-        Generate perturbations on the pointing angles.
+        """Generate noisy pointing-angle time series by perturbing the error-free reference angles.
 
-        If noise_model_version == 1, additive white Gaussian noise is applied directly to the error-free pointing angles.
-        Otherwise, colored noise is generated from a prescribed amplitude spectral density (ASD) model and mapped to the pointing angles.
+        Version 1 adds white Gaussian noise directly to the (interpolated)
+        error-free pitch/yaw/roll angles. Version 2 instead generates
+        colored noise in the RTN frame from analytical star-camera-assembly
+        and IMU ASD models (combined via inverse-variance weighting), rotates
+        it into the LOSF (line-of-sight) frame using the current
+        position/velocity and counterpart position, and extracts the
+        resulting yaw/pitch/roll perturbation. In both cases, a constant bias
+        term (per satellite/angle) is added to the perturbation, which is then
+        added to the (time-interpolated) error-free angles. Also produces
+        several diagnostic plots.
 
-        In both cases, a constant bias term is included in the final perturbation.
+        Args:
+            plotter (Plotter): Plotter instance used to save diagnostic plots.
+            position (np.ndarray): (N, 3) ECI position history of this
+                satellite.
+            velocity (np.ndarray): (N, 3) ECI velocity history of this
+                satellite.
+            error_free_attitude_sample_times (np.ndarray): Epochs at which
+                error_free_pointing_angles_time_series is sampled (may differ
+                from noisy_attitude_sample_times, e.g. due to a buffer).
+            error_free_pointing_angles_time_series (dict[str, types.TimeSeries]):
+                Nominal pitch/yaw/roll angles, as returned by
+                generate_error_free_pointing_angles; note this dict's arrays
+                are overwritten in place with the time-interpolated version.
+            noisy_attitude_sample_times (np.ndarray): Epochs to generate the
+                output noisy time series at (the actual propagated state
+                history's sample times).
+            satellite_label (str): "GRACE C" or "GRACE D"; used to look up
+                white_noise_asd_values/bias_noise_values and for plot filenames.
+            seed (int): Base random seed.
+            noise_model_version (int): 1 for white-noise perturbations, 2 for
+                the RTN/LOSF colored-noise model.
+            white_noise_asd_values (dict[str, dict[str, float]]): Per-satellite,
+                per-angle white-noise ASD values [rad Hz^-1/2], used only when
+                noise_model_version == 1.
+            bias_noise_values (dict[str, dict[str, float]]): Per-satellite,
+                per-angle constant bias values [rad], added in both versions.
+            counterpart_position (np.ndarray | None): (N, 3) ECI position
+                history of the other satellite in the pair; required when
+                the noise model version is 2 (used to define the LOSF frame).
+            generate_plots (bool): If True, saves diagnostic plots. Defaults
+                to True.
+
+        Returns:
+            dict[str, types.TimeSeries]: Keys "pitch", "yaw", "roll", each the
+                noisy pointing-angle time series (noise + bias + error-free
+                angle), sampled at noisy_attitude_sample_times.
         """
 
         pointing_angles = ["pitch", "yaw", "roll"]
@@ -727,7 +829,24 @@ class NoiseGenerator:
         seed: int,
         noise_model_version: int,
         )-> types.TimeSeries:
-        """ Generate system and oscillator noise time series. """
+        """Generate the KBR system and oscillator range-noise contribution.
+
+        Version 1 generates simple white Gaussian noise. Version 2 generates
+        colored noise from an analytical ASD model
+        (1e-6 * sqrt(1 + (0.0018/f)^4) m Hz^-1/2). Also produces diagnostic
+        ASD/time-series/Welch estimationcomparison plots.
+
+        Args:
+            plotter (Plotter): Plotter instance used to save diagnostic plots.
+            num_epochs (int): Number of samples to generate.
+            seed (int): Random seed.
+            noise_model_version (int): 1 for white noise, any other value for
+                the analytical colored-noise model.
+
+        Returns:
+            types.TimeSeries: KBR system/oscillator range-noise time series
+                [m], length is the number of epochs at a 5 s sample rate.
+        """
 
         time_step = 5.0  # seconds
         delta_f = 1.0 / (num_epochs * time_step)
@@ -825,9 +944,50 @@ class NoiseGenerator:
             bias_value: float,
             plotter: Plotter,
         ) -> tuple[np.ndarray, np.ndarray]:
-        """ 
-        Generate KBR range measurement noise using pointing angles noise time series,
-        satellite position data, and system and oscillator noise timeseries.
+        """Generate total KBR range measurement noise from its contributing error sources.
+
+        Computes each satellite's antenna phase center (APC) pointing-jitter
+        coupling noise (the range error induced by the true APC offset not
+        being at the line-of-sight-projected center of mass, using error-free
+        attitude/position), then the residual after applying an onboard APC
+        offset correction based on noisy attitude/position (which uses only
+        the nominal, not the true, APC offset vector) — this residual is what
+        actually remains in the KBR range measurement. The two satellites'
+        residuals, the KBR system/oscillator noise, and (for the biased
+        variant) a constant range bias are then summed into the total KBR
+        range noise.
+
+        Args:
+            error_free_pointing_angles_time_series (dict[str, dict[str, types.TimeSeries]]):
+                Per-satellite nominal pitch/yaw/roll angle time series.
+            noisy_attitude_time_series (dict[str, dict[str, types.TimeSeries]]):
+                Per-satellite noisy pitch/yaw/roll angle time series.
+            kbr_system_and_oscillator_noise_timeseries (types.TimeSeries): KBR
+                system/oscillator noise, as returned by
+                generate_kbr_system_and_oscillator_noise.
+            position_data (List[np.ndarray]): [GRACE C position, GRACE D
+                position] ECI histories, each (N, 3).
+            eci_gps_position_noise (dict[str, np.ndarray]): Per-satellite
+                GPS-derived position noise histories.
+            antenna_phase_center_offset_vector_sf (dict[str, np.ndarray]):
+                Per-satellite nominal (design) APC offset vector in the
+                satellite frame [m].
+            antenna_phase_center_offset_vector_error_sf (dict[str, np.ndarray]):
+                Per-satellite true APC offset error relative to the nominal
+                vector, in the satellite frame [m].
+            bias_value (float): Constant KBR range bias to add to the biased
+                total noise variant [m].
+            plotter (Plotter): Plotter instance used to save diagnostic plots.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: (total_kbr_range_noise,
+                total_kbr_range_noise_debiased), each an (N,) array [m]; the
+                first includes bias_value, the second does not.
+
+        Raises:
+            ValueError: If the per-satellite APC coupling noise histories and
+                the bias time series do not all match kbr_system_and_oscillator_noise_timeseries
+                in length.
         """
 
         # ==================================================================
@@ -1089,7 +1249,27 @@ class NoiseGenerator:
         formal_error_antenna_phase_center_offset_vector_sf: dict[str, np.ndarray],
         seed: tuple[int, int],
     ) -> dict[str, np.ndarray]:
-        """ Generate the true CoM-to-APC vector history in the satellite frame. """
+        """Generate the true center-of-mass-to-antenna-phase-center (APC) offset error history.
+
+        Models the true APC offset vector's deviation from its nominal
+        value as per-epoch, per-component Gaussian noise, using each
+        component's formal error as its standard deviation.
+
+        Args:
+            num_epochs (int): Number of samples to generate.
+            time_step (float): Sample spacing, in seconds (used only to build a
+                time axis for the diagnostic plot).
+            plotter (Plotter): Plotter instance used to save diagnostic plots.
+            formal_error_antenna_phase_center_offset_vector_sf (dict[str, np.ndarray]):
+                Per-satellite 3-element formal error standard deviations [m]
+                for the APC offset vector components, in the satellite frame.
+            seed (tuple[int, int]): Random seeds, one per satellite (GRACE C,
+                GRACE D, in that order).
+
+        Returns:
+            dict[str, np.ndarray]: Per-satellite (num_epochs, 3) APC offset
+                error history, in the satellite frame [m].
+        """
 
         apc_offset_vector_error_history = {}
         time_history = np.arange(num_epochs, dtype=float) * time_step
@@ -1142,6 +1322,39 @@ class NoiseGenerator:
         This function reproduces an accelerometer observation model by
         combining the nominal non-gravitational acceleration with relevant instrument
         error terms, such as scale factor effects, bias, misalignment, and noise.
+
+        Args:
+            plotter (Plotter): Plotter instance used to save diagnostic plots.
+            dependent_variables_array (np.ndarray): Dependent-variable history
+                from propagation; see dependent_variables_to_save for
+                the fixed column layout this function indexes into (columns
+                3:6/11:14 and 6:9/14:17 for GRACE C's/D's non-gravitational
+                accelerations, 17:26/26:35 for their J2000-to-satellite-frame
+                rotation matrices, flattened row-major).
+            time_step (float): Sample spacing, in seconds.
+            mean_full_scale_factor_matrix (dict[str, np.ndarray]): Per-satellite
+                nominal 3x3 scale-factor/misalignment matrix.
+            std_mean_full_scale_factor_matrix (dict[str, np.ndarray]):
+                Per-satellite 3x3 standard deviations for randomizing the scale
+                factor matrix per simulation run.
+            accelerometer_biases (dict[str, np.ndarray]): Per-satellite nominal
+                3-element bias vector [m/s^2].
+            std_accelerometer_biases (dict[str, np.ndarray]): Per-satellite
+                3-element standard deviations for randomizing the bias vector.
+            seed (tuple[int, int]): Random seeds, one per satellite (GRACE C,
+                GRACE D, in that order).
+            noise_model_version (int): 1 for white random noise, 2 for
+                analytical-ASD-driven colored random noise (in both cases
+                combined with the scale-factor and bias error terms).
+
+        Returns:
+            dict[str, np.ndarray]: Per-satellite (num_epochs, 3) simulated
+                accelerometer observations in the satellite frame [m/s^2].
+
+        Raises:
+            ValueError: If seed does not have one entry per satellite, or if a
+                satellite's randomized scale-factor matrix or bias vector does
+                not have shape (3, 3) / (3,).
         """
 
         dependent_variables_array = np.asarray(dependent_variables_array, dtype=float)
