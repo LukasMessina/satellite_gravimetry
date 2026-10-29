@@ -21,7 +21,7 @@ Overall, simplified white-noise assumptions are insufficient to fully characteri
 - [Installation](#installation)
 - [Required input files ](#required-input-files)
 - [Running the simulation](#running-the-simulation)
-- [Configuration](#configuration-and-numerical-considerations)
+- [Configuration](#configuration)
 - [Propagation cache](#propagation-cache)
 - [Outputs](#outputs)
 - [Optional real-data downloader](#optional-real-data-downloader)
