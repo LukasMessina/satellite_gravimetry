@@ -21,11 +21,10 @@ Overall, simplified white-noise assumptions are insufficient to fully characteri
 - [Installation](#installation)
 - [Required input files ](#required-input-files)
 - [Running the simulation](#running-the-simulation)
-- [Configuration and numerical considerations](#configuration-and-numerical-considerations)
-- [Propagation cache and computational cost](#propagation-cache-and-computational-cost)
+- [Configuration](#configuration-and-numerical-considerations)
+- [Propagation cache](#propagation-cache)
 - [Outputs](#outputs)
 - [Optional real-data downloader](#optional-real-data-downloader)
-- [Troubleshooting and reproducibility](#troubleshooting-and-reproducibility)
 
 ## Repository structure
 
@@ -207,7 +206,7 @@ This independent script propagates simplified spacecraft-pair cases under point-
 
 It uses Tudat's standard kernels, not the four extra kernels required by `main.py`. It is not a prerequisite for either noise variant and is not a pytest test suite. Its current figure directory is `GRACE-FO/plots/finite_difference_method_validation/`, which differs from the main workflow's `output/plots/` directory.
 
-## Configuration and numerical considerations
+## Configuration
 
 Settings are edited in Python; there is no separate runtime configuration file or general command-line configuration interface.
 
@@ -231,7 +230,7 @@ Important dependencies between these settings:
 - **Keep the propagation fingerprint synchronized with the model.** `propagation_config` manually summarizes the settings; it is not automatically derived from the complete Tudat setup or source code.
 
 
-## Propagation cache and computational cost
+## Propagation cache
 
 The propagation cache is shared between noise variants because the selected measurement-noise variant does not alter the reference orbital dynamics.
 
