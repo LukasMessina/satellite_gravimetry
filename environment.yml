@@ -12,7 +12,7 @@ channels:
 dependencies:
   - python=3.11
   # Prebuilt development release; no local Tudat source checkout is required.
-  - tudat-team/label/dev::tudatpy=1.0.0.dev74
+  - tudat-team/label/dev::tudatpy=1.0.0.dev75
   # Dependencies of Tudat's bundled atdf2ascii utility, omitted by its Conda metadata.
   - bitstring
   - termcolor

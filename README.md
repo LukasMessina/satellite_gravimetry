@@ -98,7 +98,7 @@ conda activate satellite-gravimetry
 
  If an environment named `satellite-gravimetry` already exists, choose a new name with `conda env create -n <new-name> -f environment.yml` and activate that name.
 
-The file uses the development channel described in the [official Tudat installation guide](https://docs.tudat.space/en/latest/getting-started/installation.html#development-version), with Tudat explicitly pinned to `1.0.0.dev74`. 
+The file uses the development channel described in the [official Tudat installation guide](https://docs.tudat.space/en/latest/getting-started/installation.html#development-version), with Tudat explicitly pinned to `1.0.0.dev75`. 
 
 The downloader is optional; its installation is described separately [below](#optional-real-data-downloader).
 

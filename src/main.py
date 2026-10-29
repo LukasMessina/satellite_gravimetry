@@ -40,6 +40,18 @@ from tudatpy.dynamics import propagation_setup
 
 noise_model_version = get_noise_model_version()
 
+# Load kernels before evaluating TLE ephemerides, which require leap-second data.
+spice_kernel_paths = [
+    Path("./kernels/nep105.bsp"),
+    Path("./kernels/plu060.bsp"),
+    Path("./kernels/ura182.bsp"),
+    Path("./kernels/gm_de440.pck"),
+]
+
+spice.load_standard_kernels()
+for path in spice_kernel_paths:
+    spice.load_kernel(str(path))
+
 ###################################################################
 #
 #            GRACE-FO ORBIT SIMULATION AND INITIALIZATION
@@ -187,17 +199,6 @@ initial_states = np.hstack((grace_c_initial_state, grace_d_initial_state))
 #                   PROPAGATOR & ENVIRONMENT SETUP
 #
 ###################################################################
-
-spice_kernel_paths = [
-    Path("./kernels/nep105.bsp"),
-    Path("./kernels/plu060.bsp"),
-    Path("./kernels/ura182.bsp"),
-    Path("./kernels/gm_de440.pck"),
-]
-
-spice.load_standard_kernels()
-for path in spice_kernel_paths:
-    spice.load_kernel(str(path))
 
 # Vehicle configuration parameters
 # TODO: Improve the drag and solar radiation pressure modelling to match GRACE-FO specifications.
