@@ -1,0 +1,33 @@
+name: satellite-gravimetry
+
+# Target: x86-64 Linux, including Ubuntu under WSL2 on Windows.
+# The pinned PyCBC release has no native Windows wheel; use WSL2 there.
+
+channels:
+  - tudat-team/label/dev
+  - tudat-team
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.11
+  # Prebuilt development release; no local Tudat source checkout is required.
+  - tudat-team/label/dev::tudatpy=1.0.0.dev74
+  # Dependencies of Tudat's bundled atdf2ascii utility, omitted by its Conda metadata.
+  - bitstring
+  - termcolor
+  # Required by this Tudat binary (the historical NumPy 1.x pin is incompatible).
+  - numpy>=2.4.6,<3
+  - scipy=1.17.1
+  - matplotlib=3.10.8
+  - h5py=3.15.1
+  - findiff=0.13.0
+  - pip
+  # Keep legacy pkg_resources support for compatibility with scientific dependencies.
+  - setuptools<81
+  - pip:
+      - pycbc==2.10.0
+
+# Optional real-data downloader (not used by the synthetic simulation):
+#   python -m pip install podaac-data-subscriber
+# SPICE kernels and data/ assets are separate inputs; see README.md.

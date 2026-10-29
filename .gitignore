@@ -5,3 +5,5 @@ src/__pycache__/
 *:Zone.Identifier
 data/grace_fo_1_front_panel_temperature.txt
 output/cache/
+environment
+
