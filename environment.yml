@@ -1,6 +1,6 @@
 name: satellite-gravimetry
 
-# Target: x86-64 Linux, including Ubuntu under WSL2 on Windows.
+# Target: x86-64 Linux with glibc >=2.38, including Ubuntu under WSL2 on Windows.
 # The pinned PyCBC release has no native Windows wheel; use WSL2 there.
 
 channels:
@@ -10,6 +10,9 @@ channels:
   - nodefaults
 
 dependencies:
+  # This Tudat binary requires glibc 2.38; its package metadata omits the constraint.
+  # Conda detects this virtual package from the host OS; it does not install glibc.
+  - __glibc>=2.38
   - python=3.11
   # Prebuilt development release; no local Tudat source checkout is required.
   - tudat-team/label/dev::tudatpy=1.0.0.dev75

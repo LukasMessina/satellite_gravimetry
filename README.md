@@ -40,9 +40,19 @@ Two additional scripts are optional and independent of this sequence. [`src/fini
 
 ## Installation
 
-Use the root-level [`environment.yml`](environment.yml) to install all required analysis packages together. The supported installation targets are **Linux** and **Windows with a Linux distribution under WSL2**. Both use the same environment file and prebuilt Tudat package. The pinned Tudat release has Windows binaries, but the complete project also requires PyCBC. The [PyCBC 2.10.0 release files](https://pypi.org/project/PyCBC/2.10.0/#files) provide Linux and macOS wheels, not Windows wheels. Therefore, native Windows is not a verified or supported installation route for this environment.
+Use the root-level [`environment.yml`](environment.yml) to install all required analysis packages together. The prebuilt environment targets **Linux with glibc 2.38 or newer**, either natively or inside **WSL2**. Both use the same environment file and prebuilt Tudat package. The pinned Tudat release has Windows binaries, but the complete project also requires PyCBC. The [PyCBC 2.10.0 release files](https://pypi.org/project/PyCBC/2.10.0/#files) provide Linux and macOS wheels, not Windows wheels. Therefore, native Windows is not a verified or supported installation route for this environment.
 
 ### Linux setup
+
+Before installing, check the target machine:
+
+```bash
+uname -m
+getconf GNU_LIBC_VERSION
+```
+
+The glibc version must be at least `2.38`.
+
 
 On Ubuntu or Debian, install the command-line tools used to obtain the repository and kernels if they are not already available:
 
@@ -83,7 +93,7 @@ wsl --list --verbose
 
 The Ubuntu entry should show version `2`. If an existing Ubuntu installation shows version `1`, convert it with `wsl --set-version Ubuntu 2`, substituting its actual distribution name if different.
 
-**Run all remaining commands inside the Ubuntu terminal.** Follow the Linux setup above to install the **Linux** edition of Conda inside WSL, then create the project environment below. A Conda installation on Windows does not replace the separate Linux installation.
+**Run all remaining commands inside the Ubuntu terminal.** Run the architecture and glibc checks in [Linux setup](#linux-setup) inside WSL too; WSL2 alone does not guarantee glibc 2.38 or newer. Follow the Linux setup above to install the **Linux** edition of Conda inside WSL, then create the project environment below. A Conda installation on Windows does not replace the separate Linux installation.
 
 Keep the repository in the WSL Linux filesystem, for example `/home/<linux-user>/satellite_gravimetry`, for better Linux filesystem performance. A Windows path such as `C:\Users\<user>\satellite_gravimetry` is accessible as `/mnt/c/Users/<user>/satellite_gravimetry`, but is not the preferred location for this workflow (see [Microsoft filesystem guidance](https://learn.microsoft.com/en-us/windows/wsl/filesystems)).
 
@@ -98,7 +108,7 @@ conda activate satellite-gravimetry
 
  If an environment named `satellite-gravimetry` already exists, choose a new name with `conda env create -n <new-name> -f environment.yml` and activate that name.
 
-The file uses the development channel described in the [official Tudat installation guide](https://docs.tudat.space/en/latest/getting-started/installation.html#development-version), with Tudat explicitly pinned to `1.0.0.dev75`. 
+The file uses the development channel described in the [official Tudat installation guide](https://docs.tudat.space/en/latest/getting-started/installation.html#development-version), with Tudat explicitly pinned to `1.0.0.dev75`.
 
 The downloader is optional; its installation is described separately [below](#optional-real-data-downloader).
 
@@ -108,6 +118,7 @@ From the repository root, with `satellite-gravimetry` active, run these commands
 
 ```bash
 python -m pip check
+python -c "import sys; from tudatpy import dynamics; print(sys.executable); print('Tudat dynamics import OK')"
 ```
 
 The command should report `No broken requirements found.` 
